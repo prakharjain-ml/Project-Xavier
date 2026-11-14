@@ -1,0 +1,20 @@
+---
+description: Flicker interface rules (pygame)
+globs: interface/**
+alwaysApply: false
+---
+
+# interface/ rules
+
+- Flicker by counting display frames at the measured refresh rate (60 Hz). A target at f Hz has a period of
+  60/f frames, which must be a whole number. Split on/off as evenly as possible (9 frames = 5 on + 4 off,
+  7 = 4 + 3, 5 = 3 + 2, 4 = 2 + 2), or use sampled-sinusoid brightness. Never use sleep() or wall-clock timing.
+- Frequencies come from `shared/protocol.py`. Reject any frequency that is not 60 divided by a whole number of
+  frames, with a clear error.
+- Show live FPS and a dropped-frame counter in a corner (toggle with a key). Log any frame over 20 ms.
+- pygame runs on the main thread (macOS requirement) with `pygame.display.set_mode(..., vsync=1)` in fullscreen.
+  Read `ControlStatus` from a latest-only non-blocking queue (`maxsize=1`); never block the render loop, and do not
+  import `cv2` in Mode 1 (SDL2 dylib clash on macOS; Mode 2 runs `vision/` in a separate process over UDP per D3).
+- First screen: photosensitivity warning, "press SPACE to begin". No flicker before that.
+- Dwell feedback: a bar under the target the decoder currently holds; full bar = selected.
+- High contrast, large targets, black background. No animation besides the flicker itself.

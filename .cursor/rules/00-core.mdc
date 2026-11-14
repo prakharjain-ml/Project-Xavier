@@ -1,0 +1,23 @@
+---
+description: Core rules for every agent session in this repo
+globs:
+alwaysApply: true
+---
+
+# Core rules (always on)
+
+- Read `AGENTS.md`, the current phase in `.cursor/plans/ssvep-chair.plan.md`, and your folder's section of
+  `PROGRESS.md` before writing code.
+- Safety: the default motor command is STOP. Never run a command that opens a serial port, touches
+  `/dev/cu.*` or `/dev/tty.*`, or runs anything in `motors/` against real hardware. Use `MockSerial`.
+- Scope: edit only the folder named in the prompt. If the task needs a change elsewhere, stop and say so.
+- Ask, do not assume. One clarifying question beats a wrong guess.
+- Minimal diffs. Do not refactor, rename, reformat or "improve" code you were not asked to touch.
+- Plan in 3-6 bullets before coding. For multi-file work, use Plan mode and save the plan to the workspace.
+- Evidence or it did not happen: finish every task with the exact command you ran and its real output
+  (tests, printed values, a saved plot path). Never claim success without output.
+- A teammate is learning: comment non-obvious lines (signal processing, timing, state transitions) in plain English.
+- Contracts live in `docs/INTERFACES.md`. Import types from `shared/protocol.py`; never redefine them locally.
+- End of task: update your section of `PROGRESS.md` (done, in progress, next step, bugs, evidence) and propose a
+  conventional commit message like `bci: add CCA scorer with harmonic test`.
+- If you make the same mistake twice, propose a one-line addition to the relevant rule file.

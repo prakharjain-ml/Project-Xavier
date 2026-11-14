@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+.env
+*.pt
+*.onnx
+runs/
+data/raw/
+*.mp4
+*.mov
+.ipynb_checkpoints/
+_backup/

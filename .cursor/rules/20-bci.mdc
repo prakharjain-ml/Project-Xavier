@@ -1,0 +1,26 @@
+---
+description: EEG acquisition and SSVEP decoding rules
+globs: bci/**,tools/fake_eeg.py,tools/record.py
+alwaysApply: false
+---
+
+# bci/ rules
+
+- Board and sampling rate come from BrainFlow (`BoardShim.get_sampling_rate`, `get_eeg_channels`), never hard-coded.
+  `--synthetic` uses `BoardIds.SYNTHETIC_BOARD`. Close OpenBCI GUI before opening the Cyton serial port in Python
+  (macOS allows only one process on `/dev/cu.usbserial-*`, and GUI impedance mode injects test currents).
+- Filtering: subtract per-channel mean / linear detrend (`scipy.signal.detrend`) on each window BEFORE zero-phase
+  band-pass and 60 Hz notch (`sosfiltfilt`) so Cyton DC offsets do not cause edge ringing. Upper band edge must
+  clear the highest harmonic you score (`2 * 15 Hz = 30 Hz`).
+- Implement BOTH scorers behind one interface: FFT power at f and 2f (normalized by local neighboring background
+  bins to counter `1/f` low-frequency tilt), and CCA with sin/cos references at f and 2f.
+  The decoder picks via config; Phase 3 data decides which ships.
+- Windowing & confidence: sliding window (default 1.5 s, step 0.25 s, both from config). Frequency resolution is
+  1/window_s; say so in a comment where it matters. Confidence must combine target-to-runner-up margin AND
+  absolute correlation / SNR so looking away drops to `NONE` within `< 1 s` rather than lingering for 1.5 s.
+- Alpha detector (`bci/alpha.py`): compare broadband `8-13 Hz` power against a rolling eyes-open baseline while
+  guarding against narrowband SSVEP peaks at `8.57 Hz` and `12.0 Hz` so staring at LEFT/RIGHT never false-trips `ALPHA`.
+- Output only `Intent` from `shared/protocol.py`. Below the confidence threshold the target is NONE.
+- Required tests: each target frequency recovered from synthetic data; the harmonic test (a 6 Hz signal must not
+  score as 12 Hz); pure noise returns NONE most of the time.
+- Raw recordings go to `data/raw/` (gitignored). Never commit EEG data.

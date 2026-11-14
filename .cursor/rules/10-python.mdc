@@ -1,0 +1,17 @@
+---
+description: Python conventions for all project code
+globs: **/*.py
+alwaysApply: false
+---
+
+# Python conventions
+
+- Python 3.12, type hints on public functions, `@dataclass(frozen=True)` for messages.
+- Plain modules, functions under ~50 lines, no classes where a function will do. No notebooks in the repo.
+- Use `time.monotonic()` for all timing; never `time.time()` for intervals.
+- Every module that runs has `if __name__ == "__main__":` with argparse and a `--synthetic` or `--mock` flag so it
+  runs without hardware.
+- Logging: `logging` module, one line per decision with a timestamp: target, confidence, state, command.
+- Tests in `tests/` next to the folder (`bci/tests/test_filters.py`), pytest, no network, no hardware.
+- numpy/scipy for signal work; do not add pandas or frameworks unless the human approves.
+- Dependencies: only what `AGENTS.md` lists. Propose additions with a reason; never pip install silently.

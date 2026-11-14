@@ -1,0 +1,20 @@
+---
+description: Motor driver rules - agents never run real hardware
+globs: motors/**,firmware/**
+alwaysApply: false
+---
+
+# motors/ rules
+
+- Agents write and test motor code only against `MockSerial`. Never run `teleop.py` or any script with a real port.
+- Laptop side (`motors/`): send the bridge line protocol from `docs/INTERFACES.md` every 50 ms, even when stopped;
+  parse distance (`-1` = out of range) and status replies; pass `distance_cm` to control and catch `SerialException`
+  gracefully (emit zero / safe state, never crash the process if a USB cable wiggles).
+- ESP32 side (`firmware/bridge/bridge.ino`): watchdog to zero after 200 ms of silence, local obstacle stop on net
+  forward motion `(left + right) > 0` when `0 < distance_cm < OBSTACLE_STOP_CM` (so in-place turns remain allowed),
+  short `pulseIn` timeout (~20 ms -> `-1 cm`, never `0 cm`), clamp, and zero immediately on malformed lines. Keep the
+  hoverboard frame encoder in one function with a comment showing a known-good byte example. The frame format is
+  provisional until checked against the flashed firmware.
+- Agents never compile-and-upload firmware or open a port. A human does that with the kill switch in hand.
+- Clamp every outgoing speed to `MAX_SPEED` in the driver as well as in control (defense in depth).
+- `teleop.py` is for humans: space bar = stop, speed capped, prints a warning banner on start.

@@ -1,0 +1,14 @@
+---
+description: Vision (Mode 2 stretch) rules
+globs: vision/**
+alwaysApply: false
+---
+
+# vision/ rules
+
+- Mode 2 is a stretch goal. Do not let vision work block Mode 1.
+- Ultralytics YOLO with ByteTrack (`tracker="bytetrack.yaml"`), device `mps` when available. Log measured FPS.
+- Output `TargetSet` (top 4 tracked objects with stable ids) from `shared/protocol.py`.
+- Visual servoing outputs only a desired turn/forward suggestion; control/ decides and can always STOP.
+- Lost track, low confidence or stale frame -> no suggestion (control treats as STOP).
+- Weights files (`*.pt`) are gitignored; document the model name in the folder README.

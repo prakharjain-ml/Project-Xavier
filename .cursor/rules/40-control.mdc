@@ -1,0 +1,17 @@
+---
+description: Safety state machine rules
+globs: control/**
+alwaysApply: false
+---
+
+# control/ rules
+
+- `docs/SAFETY.md` is the spec. The code implements exactly its states and transitions, nothing extra.
+- Every state, timer and threshold is a named constant at the top of the module, with units in the name
+  (`DWELL_S`, `STALE_INTENT_S`, `MAX_SPEED`).
+- The control loop runs at a fixed rate and ALWAYS emits a command each tick. The fallback branch of every
+  match/if chain returns STOP.
+- No direct serial access here. Output `MotorCommand` objects only.
+- Tests are table-driven: one row per transition in SAFETY.md, plus a fuzz test that random Intents with
+  confidence below threshold never produce motion.
+- Changing a transition means changing SAFETY.md first, with the human's approval.

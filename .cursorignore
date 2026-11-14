@@ -1,0 +1,7 @@
+.env
+data/raw/
+*.pt
+*.onnx
+runs/
+*.mp4
+*.mov

@@ -1,0 +1,13 @@
+---
+description: Use when writing the README, Devpost text, demo script or pitch
+globs: docs/**,README.md
+alwaysApply: false
+---
+
+# Docs and Devpost rules
+
+- Plain, specific, honest. Say what works live and what is a stretch. Never inflate what the team built.
+- No em dashes. Short sentences. Numbers with units (accuracy %, latency s, speed).
+- Map the story to the judging criteria in the onsite packet: Creativity, Utility, Charity, Avidity.
+- Devpost tracks: exactly one main track (Healthcare) plus special tracks we actually qualify for.
+- The demo must fit in 2 minutes: problem in one sentence, who it is for, live demo, what we learned, what's next.

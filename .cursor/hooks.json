@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/guard.sh",
+        "matcher": "(/dev/(cu|tty)\\.|teleop|motors/driver|serial\\.Serial|--serial|--cyton|arduino-cli upload|pio run.*upload|esptool|push .*(-f|--force)|rm -rf|reset --hard)",
+        "failClosed": true,
+        "timeout": 5
+      }
+    ]
+  }
+}

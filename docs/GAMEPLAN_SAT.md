@@ -1,73 +1,61 @@
-# Saturday Nov 14 game plan
+# Game plan (updated Sat Nov 14, 2:15 pm)
 
-Built from `.cursor/plans/ssvep-chair.plan.md` (phases 2-5) and the state of the repo at ~3 am. Owner: Prakhar.
-The two times that never move: **Sat 6:00 pm Mode 2 go/no-go** and **Devpost submitted Sun 7:15 am**.
+Fixed times: **Sat 6:00 pm go/no-go** (what we demo) | **Sun 1:00 am feature freeze** | **Devpost submitted Sun 7:15 am**
+| Judging Sun 9:30 am. All code is on branch `prakhar/gaze` (includes Keshav's firmware); not in `main` yet.
 
-## Where we are (3 am)
-| Piece | Status | Evidence |
+## What we will demo (honest tiers)
+| Tier | Demo | Needs |
 | --- | --- | --- |
-| `shared/protocol.py` (task 1.3) | DONE | 23 tests; constants parsed from INTERFACES.md |
-| `control/state_machine.py` (2.11) | DONE, needs Pratosh review | 53 tests, one per SAFETY.md row, fuzz, mutation-checked |
-| `interface/flicker.py` (2.6-2.8) | CODE DONE, timing NOT verified | 14 headless tests; needs a human 60 s run on the MacBook screen |
-| `vision/` (Mode 2 head start) | WORKING on webcam | YOLO + ByteTrack + Gemini ranking, 36 tests |
-| `tools/smoke.py` (1.7, Vani) | NOT STARTED | Gate 1 cannot pass without it |
-| `bci/` (Vani) | UNKNOWN | check PROGRESS.md bci section |
-| Hardware: firmware flash, bridge, chassis (2.13-2.16) | UNKNOWN | Keshav and Pratosh worked overnight |
-| Real SSVEP peak on a head (2.10) | UNKNOWN | OpenBCI data flows; a 12 Hz peak has not been recorded here |
-| Venue permission to ride, Keshav CONFIRM list | UNKNOWN | paste answers into PROGRESS.md |
+| **A (must)** | Rider **steers with their eyes**: look at an arrow -> 1.5 s dwell -> wheels move; look away / close eyes -> stop. Kill switch + ESP32 watchdog + ultrasonic stop shown. | gaze (works), app.py (works on mock), **ESP32 + hoverboard wired (open)** |
+| **B (target)** | Rider **looks at a real object** (YOLO box turns yellow) and **clenches jaw to confirm** (green); chair turns toward it. | object_select (works, dwell confirm), jaw detector (practice passes), **EEG board connected (open)**, drive-to-object code (to do) |
+| **C (stretch)** | Brain-signal (SSVEP) confirmation; Gemini picks likely destinations (doors, tables, people). | clean EEG signal (not yet); Gemini (works) |
+Pitch it honestly: gaze = camera; jaw clench = muscle signal through the EEG headset; brain SSVEP = stretch.
 
-## First 30 minutes after waking (Prakhar)
-1. Share the overnight work (it is on a local branch nobody else can see yet):
-   `git push -u origin prakhar/overnight-mode1`, then on GitHub click "Compare & pull request" into `main` and ask
-   Pratosh to review `control/state_machine.py`. Then `git checkout main && git pull` after merge, and read
-   PROGRESS.md (bci, motors/firmware sections) to fill in the UNKNOWN rows above.
-2. Flicker timing gate (2.6): `python -m interface.flicker --seconds 60` fullscreen, everything else closed
-   (Chrome used ~86% CPU last night). Pass = `mean_fps` 59.5-60.5 AND `dropped=0` AND no red
-   "NO VSYNC" text / "vsync is not pacing" log line. Paste the summary line into PROGRESS.md.
-   Do this BEFORE electrodes go on: Prakhar is the default rider for 3.2 at 6:45, and a bad flicker means bad
-   calibration data.
-3. Dwell bars (2.8): `python -m interface.flicker --fake-status` for 20 s; bars fill, FPS stays 60.
-4. Phone check (2.9): 240 fps video of `python -m interface.flicker --single 12`, count frames per cycle (expect 20 phone
-   frames per 12 Hz cycle); repeat for 6.67, 8.57 and 15. Pass = within 2%.
+## Status
+| Piece | State | Evidence |
+| --- | --- | --- |
+| Safety state machine, motor driver, app.py | DONE (mock) | 231 tests; held key -> drive lines only after 1.5 s dwell |
+| Gaze arrows (`app.py --gaze`) | WORKS live, needs polish | all 4 directions reached MOVING; calibration must be redone in the rider's seat |
+| Gaze on objects (`vision/object_select.py`) | WORKS, accuracy improving | 3 confirmations, 0 false; now calibrates at session start; tracker IDs stable (4 vs 44-60) |
+| Distance estimate | CALIBRATED for Pixel (85.5 deg) | chair at 1.55 m reads 1.55 m |
+| Jaw-clench confirm (`bci/jaw.py`, `bci/jaw_live.py`) | READY, untested on a head | practice mode 4/4; guide `docs/JAW_CONFIRM.md` |
+| EEG board | BLOCKED | Wi-Fi drops mid-session; last recording railed (ear clips) |
+| Hoverboard -> ESP32 | BLOCKED | UART pins on the 4-pin plug not yet identified; `bridge.ino` not uploaded |
+| Forward camera | FLAKY | Pixel drops webcam mode when it sleeps; iPhone Continuity Camera is the alternative |
 
-## Schedule
-| Time | Phase | Who | Done when (gate) |
-| --- | --- | --- | --- |
-| 6:00-6:45 | 3.1 `tools/record.py` | Vani | one labeled file per session in `data/raw/` |
-| 6:00-6:45 | flicker gates above (2.6, 2.8, 2.9), before electrodes | Prakhar | 59.5-60.5 FPS, `dropped=0`, frequencies within 2% |
-| 6:45-7:45 | 3.2 record two sessions (4 targets, eyes closed, rest) | rider + Vani | two sessions saved |
-| 7:45-9:00 | 3.3 `tools/analyze.py`: FFT vs CCA, windows 1.0/1.5/2.0 s | Vani | table in `docs/calibration.md` |
-| 9:00-9:30 | 3.4 choose frequencies, window, threshold | Prakhar + Vani | update INTERFACES.md first, then protocol.py (test enforces it) |
-| 9:30-10:45 | 3.5 live screen-only test, 3.6 alpha stop test | Prakhar | >= 80% accuracy, < 4 s to select, rest -> NONE >= 90%, alpha 5/5 with 0 false stops |
-| 10:45-11:00 | 3.7 record 60 s of live decoding for the video | Vani | clip saved |
-| **11:00** | **Gate 3 + sync** | all | numbers in PROGRESS.md; else take the fallback ladder (3 targets, 2 targets, 2 s window) |
-| 11:00-12:00 | 4.1 `app.py`: decoder -> `control.state_machine.step` at 20 Hz -> mock motors | Vani + Prakhar | runs with `--synthetic --mock` |
-| 10:30-12:00 | 4.0 mount ESP32, ultrasonic, kill switch; teleop, wheels off ground | Pratosh + Keshav | drives and stops through the bridge |
-| 1:00-2:00 | 4.2 wheels-off test with full app and real rider | Pratosh + Keshav | video: wheels follow gaze, stop on look-away and eyes closed |
-| 2:00-3:00 | 4.3 first floor test, minimum speed, spotter + kill switch | all | drives forward and stops correctly |
-| 3:00-4:30 | 4.4 tune dwell, speed cap, turn speed | Pratosh + Prakhar | constants changed in INTERFACES.md with a reason |
-| 4:30-5:00 | 4.5 ultrasonic stop 5/5 | Keshav | video |
-| 5:00-6:00 | 4.6 full section 1.3 demo three times in a row | all | three passes recorded |
-| **6:00 pm** | **Go/no-go** | all | pass -> 5A (Mode 2); fail -> 5B (hardening). Not extended. |
-| 7:00 pm-1:00 am | 5A: vision -> interface boxes -> GoalHint -> control | Vani, Prakhar, Pratosh | chair reaches a chosen object 2 of 3 tries |
+## Who does what (now -> 6 pm)
+**Hardware (Pratosh, Keshav)**
+1. 4-pin plug: identify GND / VCC / TX / RX with the voltage method (board on, wheels up). Never wire VCC. 30 min
+2. Wire ESP32 (left board GPIO17/18, right GPIO15/16), upload `firmware/bridge/bridge.ino`, run
+   `python firmware/hoverboard/tools/bridge_bench_test.py /dev/cu.<esp32>`: wheels follow, last line WATCHDOG. 1 h
+3. `python app.py --keyboard --serial /dev/cu.<esp32>` wheels up: hold Up -> 1.5 s -> forward; release -> stop. 30 min
+4. Chassis: plank, casters, kill switch in the battery line, ultrasonic (TRIG GPIO4, ECHO GPIO5 via 1k/2k divider).
+5. Mount the phone behind the laptop (clamp on the chair frame, camera forward, lid angle fixed).
 
-## Decisions waiting for the 11 am sync
-1. Confirm the two state-machine readings in PROGRESS.md (stale data never clears E_STOP; alpha keeps sending
-   StopRequest while eyes are closed).
-2. Confirm the `GoalHint` contract added to INTERFACES.md.
-3. Alpha-band overlap: 8.57 and 12 Hz sit inside 8-13 Hz. If task 3.6 shows false stops, the best valid set
-   outside the band is 5, 6.67, 15, 20 Hz (all 60/n, no frequency double another, >= 1.67 Hz apart). Costs:
-   5 Hz is tiring to watch; 20 Hz gives a weaker SSVEP and is in the most photosensitive range. Let the
-   calibration data decide. (Do NOT use 7.5 with 15 Hz: 15 = 2 x 7.5.)
+**EEG (Vani + teammate)**: follow `docs/JAW_CONFIRM.md`
+6. Prefer the USB dongle over Wi-Fi (battery + Auto-Join cause the drops). Fix railing (ear clips: SRB / BIAS bottom pins).
+7. `python -m bci.jaw_live --dongle /dev/cu.usbserial-...`: 10 clenches -> 9-10 CONFIRM, 30 s talking -> 0. Record in PROGRESS.md.
 
-## Mode 2 work already done (only used if the 6 pm gate passes)
-`python -m vision.detect_track --source 0 --gemini`: wheelchair-relevant objects only, stable IDs, flicker
-frequencies kept per object and spread apart between neighbours, overlapping boxes rejected, distance estimate,
-Gemini picks likely destinations (doors, tables with items, people). Remaining for 5A: send TargetSet/GoalHint
-over UDP, draw flickering boxes in `interface/`, map the winning frequency to a target in `control/`.
+**Prakhar (+ Claude)**
+8. EyeTrax verdict: if better than ours, plug it in as the gaze source (same UDP message). 1 h
+9. Confirmation source in object_select: SPACE now, jaw clench when the board works, dwell as fallback. 45 min
+10. Drive-to-object: confirmed box -> turn until centred -> roll forward -> stop when close / lost / ultrasonic,
+    through the same state machine, tested on the mock port, then wheels up. 2 h
+11. Open the pull request `prakhar/gaze` -> `main`; Pratosh reviews control/motors, Vani reviews bci/vision.
 
-## Never forget
-- Default command is STOP. Humans run hardware. Wheels off the ground before anyone rides.
-- Ask every viewer about photosensitive epilepsy before the flicker starts.
-- Film every first success on a phone (footage for the 2-minute video).
-- Nobody tests motors without sleep.
+## 6 pm go/no-go
+- Tier A works wheels-up 3 times in a row -> evening = floor tests (permitted area, spotter, kill switch) + Tier B.
+- Tier A does not work -> evening = fix the hardware chain only; demo gaze on screen with wheels on a stand.
+
+## Evening and night
+| Time | What |
+| --- | --- |
+| 7 pm - 1 am | integrate Tier B; film every first success on a phone; draft Devpost (problem, how it works, safety, honest limits) |
+| 1 am | feature freeze; only demo-critical fixes after this |
+| 1-2 am | film the final demo from two angles |
+| 2-7 am | video edit (Prakhar after sleep), Devpost text, rehearse the 2-minute pitch twice |
+| **7:15 am** | **submit Devpost** |
+
+## Rules that do not change
+STOP is the default. Humans run hardware; wheels off the ground first; kill switch in a hand; spotter for floor
+tests. Ask every viewer about photosensitive epilepsy before any flicker. Calibrate gaze in the rider's seat.

@@ -34,6 +34,7 @@ class JawStream:
         self._buffer = np.zeros((0, 0))
         self._calibration: dict[str, list[float]] = {"relaxed": [], "clench": []}
         self.threshold: float | None = None
+        self.clench_ratio: float | None = None
         self._state, self._t = JawState(), 0.0
 
     def _windows(self, chunk: np.ndarray):
@@ -51,6 +52,8 @@ class JawStream:
         relaxed, clenches = self._calibration["relaxed"], self._calibration["clench"]
         # Only the strongest third of the clench windows: the clench prompt includes reaction time.
         strongest = sorted(clenches)[-max(1, len(clenches) // 3):]
+        # Measured on THIS rider: how much stronger a clench is than rest (the number for the Devpost/gallery).
+        self.clench_ratio = float(np.median(strongest) / max(np.median(relaxed), 1e-9))
         self.threshold = calibrate_threshold(relaxed, strongest)
         self._buffer = np.zeros((0, 0))
         return self.threshold
@@ -218,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as error:
             print(f"CALIBRATION FAILED: {error}")
             return 2
-        print(f"calibrated (threshold {threshold:.1f}). 3) LIVE: clench to confirm; Ctrl+C to stop.")
+        print(f"calibrated (threshold {threshold:.1f}): clench measured {stream.clench_ratio:.1f}x stronger than rest. "
+              "3) LIVE: clench to confirm; Ctrl+C to stop.")
         confirms, start = 0, time.monotonic()
         while time.monotonic() - start < args.seconds:
             elapsed = time.monotonic() - start

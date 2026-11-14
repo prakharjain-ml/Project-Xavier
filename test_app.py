@@ -109,7 +109,12 @@ def test_end_to_end_held_forward_reaches_the_port_as_drive_lines_after_dwell(mon
     class RecordingMock(MockSerial):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self.times = []  # when each line was written: lets the test check the dwell in SECONDS
             ports.append(self)
+
+        def write(self, data):
+            self.times.append(_time.monotonic() if "_time" in globals() else __import__("time").monotonic())
+            return super().write(data)
 
     real_snapshot = app.KeyboardIntentSource.snapshot
 
@@ -123,7 +128,8 @@ def test_end_to_end_held_forward_reaches_the_port_as_drive_lines_after_dwell(mon
     lines = ports[0].lines()
     first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
     assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")  # forward at the speed cap
-    assert first_drive >= 25  # ~1.5 s of STOP lines at 20 Hz first: the dwell was respected
+    # Dwell measured in time, not line count (under CPU load the driver sends fewer lines per second).
+    assert ports[0].times[first_drive] - ports[0].times[0] >= DWELL_S - 0.15
     assert all(line.startswith("S,") for line in lines[-5:])  # app exit sends explicit STOP
 
 
@@ -181,7 +187,12 @@ def test_end_to_end_gaze_on_forward_arrow_drives_after_dwell(monkeypatch, tmp_pa
     class RecordingMock(MockSerial):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self.times = []  # when each line was written: lets the test check the dwell in SECONDS
             ports.append(self)
+
+        def write(self, data):
+            self.times.append(_time.monotonic() if "_time" in globals() else __import__("time").monotonic())
+            return super().write(data)
 
     def fake_gaze_process(_camera, _calibration):
         q = _queue.Queue(maxsize=1)
@@ -203,7 +214,8 @@ def test_end_to_end_gaze_on_forward_arrow_drives_after_dwell(monkeypatch, tmp_pa
     lines = ports[0].lines()
     first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
     assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")
-    assert first_drive >= 25  # the 1.5 s dwell still applies to gaze
+    # Dwell measured in time, not line count (under CPU load the driver sends fewer lines per second).
+    assert ports[0].times[first_drive] - ports[0].times[0] >= DWELL_S - 0.15
 
 
 def test_start_gaze_process_receives_udp_samples_and_drops_garbage(monkeypatch):

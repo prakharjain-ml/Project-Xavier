@@ -18,6 +18,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 ---
 
 ## bci/ (owner: Vani)
+### Sat Nov 14, ~1 pm - Claude Code (Opus 5.5), for Prakhar (Vani: please review, it is in your folder)
+- Done: `bci/jaw.py` (jaw-clench EMG detector: 40-200 Hz energy per 0.1 s, +-12 Hz mains guard, held >= 0.3 s, once per clench, refuses to calibrate if clench < 3x relaxed) and `bci/jaw_live.py` (live test: --dongle PORT / --wifi / --synthetic practice). Step-by-step: `docs/JAW_CONFIRM.md` (incl. Wi-Fi dropouts: battery, Auto-Join, prefer the USB dongle).
+- Next step (HUMAN): fix railing (ear clips), then `python -m bci.jaw_live --dongle /dev/cu.usbserial-...`; pass = 10 clenches -> 9-10 CONFIRMs, 30 s talking -> 0.
+- Evidence (command + result): `python -m pytest -q bci/tests` -> 12 passed; `python -m bci.jaw_live --synthetic --seconds 20` -> 4 fake clenches -> `summary: confirms=4` (at 250 Hz).
+
 ### [time] - [model/agent]
 - Done:
 - In progress (file:function, state):

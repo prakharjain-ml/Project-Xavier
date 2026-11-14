@@ -93,6 +93,26 @@ def gaze_problem(sample: GazeSample | None, now: float) -> str | None:
     return "eyes_closed" if sample.closed else "no_face"
 
 
+CONFIRM_KEY = ord("j")  # "J for jaw": stand-in for a clench. Not SPACE, which is EMERGENCY STOP in app.py.
+
+
+def confirm_settings(mode: str) -> float | None:
+    """Dwell time that confirms by itself: DWELL_S in 'dwell' mode, None when only a clench / key may confirm."""
+    return DWELL_S if mode == "dwell" else None
+
+
+def confirm_event(mode: str, key: int, jaw) -> bool:
+    """Did the rider confirm this frame? 'key': J pressed. 'jaw': a clench from the headset (on the practice
+    board, J injects a fake clench into the real detector instead)."""
+    if mode == "key":
+        return key == CONFIRM_KEY
+    if mode == "jaw" and jaw is not None:
+        if key == CONFIRM_KEY and jaw.mode == "synthetic":
+            jaw.inject_fake_clench()
+        return jaw.take()
+    return False
+
+
 def dwell_fraction(sel: Selection, now: float, dwell_s: float = DWELL_S) -> float:
     return 0.0 if sel.since is None else min(1.0, (now - sel.since) / dwell_s)
 
@@ -119,7 +139,7 @@ def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now:
 
 
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
-         status: str) -> np.ndarray:
+         status: str, dwell_s: float | None = DWELL_S) -> np.ndarray:
     canvas = cv2.resize(frame, (CANVAS_W, CANVAS_H))
     for t in targets:
         x1, y1, x2, y2 = (int(v * s) for v, s in zip(boxes[t.id], (CANVAS_W, CANVAS_H, CANVAS_W, CANVAS_H)))
@@ -127,8 +147,12 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 6 if color != RED else 3)
         dist = "" if t.distance_m is None else f" ~{t.distance_m:.1f} m"
         cv2.putText(canvas, f"{t.label}{dist}", (x1 + 6, max(24, y1 + 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        if t.id == sel.candidate and t.id != sel.confirmed:  # dwell progress bar
-            cv2.rectangle(canvas, (x1, y2 + 6), (x1 + int((x2 - x1) * dwell_fraction(sel, now)), y2 + 18), YELLOW, -1)
+        if t.id == sel.candidate and t.id != sel.confirmed:
+            if dwell_s is not None:  # dwell mode: progress bar
+                cv2.rectangle(canvas, (x1, y2 + 6), (x1 + int((x2 - x1) * dwell_fraction(sel, now, dwell_s)), y2 + 18),
+                              YELLOW, -1)
+            elif sel.since is not None and now - sel.since >= MIN_LOOK_S:  # clench mode: ready
+                cv2.putText(canvas, "CLENCH to confirm", (x1 + 6, y2 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, YELLOW, 2)
     cx, cy = CANVAS_W // 2, CANVAS_H // 2
     cv2.line(canvas, (cx - 15, cy), (cx + 15, cy), GREY, 2)
     cv2.line(canvas, (cx, cy - 15), (cx, cy + 15), GREY, 2)
@@ -139,7 +163,8 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
 
 
 def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None,
-        tracker_alive=lambda: True) -> list[str]:
+        tracker_alive=lambda: True, confirm_mode: str = "dwell", jaw=None) -> list[str]:
+    dwell_s = confirm_settings(confirm_mode)
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
     targets: list[Track] = []
@@ -173,24 +198,57 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
         hit = pick_region(point, boxes, hit) if point is not None else None
         before = sel.confirmed
-        sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None)
+        sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
+                               confirm=confirm_event(confirm_mode, key, jaw))
         problem = gaze_problem(sample, now)
         problems[problem] = problems.get(problem, 0) + 1
         if sel.confirmed is not None and sel.confirmed != before:
             chosen = next(t for t in targets if t.id == sel.confirmed)
             dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
-            line = f"CONFIRMED {chosen.label} #{chosen.id} {dist} steer {steering_offset(chosen.bbox, frame.shape[1]):+.2f}"
+            how = {"dwell": "dwell", "key": "J key", "jaw": "jaw clench"}[confirm_mode]
+            line = (f"CONFIRMED {chosen.label} #{chosen.id} {dist} steer "
+                    f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
             log.info(line)
             confirmations.append(line)
         total_frames += 1
         gaze_frames += point is not None
+        how = {"dwell": "look for 1.5 s", "key": "look, then press J", "jaw": "look, then CLENCH"}[confirm_mode]
         status = ("NO GAZE (face not seen / eyes closed)" if point is None else
-                  "look at an object for 1.5 s to confirm  |  C re-centre  X cancel  Q quit")
-        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status))
+                  f"{how} to confirm  |  C re-centre  X cancel  Q quit")
+        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status, dwell_s))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")
     return confirmations
+
+
+def show_text(cv2, text: str) -> None:
+    """Full-screen instruction (used during the jaw calibration)."""
+    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), np.uint8)
+    cv2.putText(canvas, text, (60, CANVAS_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.imshow(WINDOW, canvas)
+    cv2.waitKey(1)
+
+
+def start_jaw(cv2, args):
+    """Connect the headset, run the on-screen jaw calibration, start the clench detector. None on failure."""
+    from bci.jaw_live import JawConfirmSource, parse_channels
+
+    try:
+        jaw = JawConfirmSource(args.jaw_board, args.jaw_port, channels=parse_channels(args.jaw_channels))
+    except Exception:
+        log.exception("could not connect to the OpenBCI board (%s)", args.jaw_board)
+        return None
+    try:
+        threshold = jaw.calibrate(lambda text: show_text(cv2, text))
+    except ValueError as error:
+        log.error("jaw calibration failed: %s", error)
+        show_text(cv2, "Jaw calibration failed: check electrodes")
+        jaw.stop()
+        return None
+    log.info("jaw calibrated (threshold %.1f)", threshold)
+    jaw.start()
+    return jaw
 
 
 def calibrate_now(cv2, eye_camera: int, out: str) -> bool:
@@ -225,6 +283,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hfov", type=float, default=load_hfov(), help="calibrated if data/raw/camera_calibration.json exists")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seconds", type=float, default=None)
+    parser.add_argument("--confirm", choices=["dwell", "key", "jaw"], default="dwell",
+                        help="dwell = look 1.5 s; key = look + J; jaw = look + jaw clench (OpenBCI)")
+    parser.add_argument("--jaw-board", choices=["synthetic", "wifi", "dongle"], default="dongle",
+                        help="--confirm jaw: synthetic = practice (J injects a fake clench)")
+    parser.add_argument("--jaw-port", default=None, help="OpenBCI dongle port, e.g. /dev/cu.usbserial-DM0xxxxx")
+    parser.add_argument("--jaw-channels", default="1", help="Cyton channels with an electrode, e.g. 1 or 1,2")
     parser.add_argument("--skip-calibration", action="store_true",
                         help="reuse the saved calibration (only if you have not moved since)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -264,10 +328,18 @@ def main(argv: list[str] | None = None) -> int:
     model = YOLO(DEFAULT_MODEL)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    jaw = None
     try:
+        if args.confirm == "jaw":
+            jaw = start_jaw(cv2, args)
+            if jaw is None:
+                return 2
         confirmations = run(cv2, reader, model, relevant_class_ids(model.names), gaze_queue, args.hfov, args.device,
-                            args.seconds, tracker_alive=lambda: process.poll() is None)
+                            args.seconds, tracker_alive=lambda: process.poll() is None, confirm_mode=args.confirm,
+                            jaw=jaw)
     finally:
+        if jaw is not None:
+            jaw.stop()
         gaze_stop.set()
         process.terminate()
         try:

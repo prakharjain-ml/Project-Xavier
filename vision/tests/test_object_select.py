@@ -138,3 +138,36 @@ def test_confirm_mode_never_confirms_by_dwell_alone():
 def test_confirm_event_with_nothing_under_the_gaze_does_nothing():
     sel = update_selection(Selection(), hit=None, now=1.0, dwell_s=None, confirm=True)
     assert sel.confirmed is None
+
+
+def test_confirm_settings_per_mode():
+    from vision.object_select import confirm_settings
+
+    assert confirm_settings("dwell") == DWELL_S  # dwell confirms by itself
+    assert confirm_settings("key") is None and confirm_settings("jaw") is None  # only a deliberate action confirms
+
+
+def test_confirm_event_sources():
+    from vision.object_select import confirm_event
+
+    class FakeJaw:
+        mode = "dongle"
+
+        def __init__(self, fired):
+            self.fired, self.injected = fired, False
+
+        def take(self):
+            return self.fired
+
+        def inject_fake_clench(self, seconds=0.6):
+            self.injected = True
+
+    assert confirm_event("dwell", ord("j"), None) is False
+    assert confirm_event("key", ord("j"), None) is True and confirm_event("key", ord("x"), None) is False
+    assert confirm_event("jaw", 255, FakeJaw(True)) is True
+    jaw = FakeJaw(False)
+    assert confirm_event("jaw", ord("j"), jaw) is False and not jaw.injected  # real board: J does nothing
+    practice = FakeJaw(False)
+    practice.mode = "synthetic"
+    confirm_event("jaw", ord("j"), practice)
+    assert practice.injected  # practice board: J injects a fake clench into the real detector

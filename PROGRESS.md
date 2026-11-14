@@ -70,6 +70,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~noon - Claude Code (Opus 5.5), for Prakhar (gaze fallback works live)
+- Done: tracker runs as its own program over localhost UDP (fixes 0-sample bug); straight-line calibration chosen by leave-one-dot-out check (error 0.138 vs 0.232 for the 28-term map) -> calibration accuracy 97%; on-screen gaze cursor + C-key re-centring; bigger arrow regions, enter 2% inside / leave 8% outside.
+- Evidence (command + result): `python app.py --gaze --mock --seconds 120` (Prakhar, live): all 4 directions reached MOVING (FWD 3, BACK 4, LEFT 2, RIGHT 2 of 23 selections). Before fixes: only BACK. `python -m pytest -q` -> 202 passed.
+- Next step: camera view with YOLO boxes + gaze cursor + confirm (dwell now, SSVEP once EEG works). Rider setup: 50-70 cm from screen, light in front, head still, re-centre with C.
+
 ### Sat Nov 14, ~10:30 am - Claude Code (Opus 5.5), for Prakhar (gaze fallback, branch prakhar/gaze)
 - Done: MediaPipe 1.2.3 installed with --no-deps (OpenCV untouched); face model in ~/hp26-models/face_landmarker/. `vision/gaze.py` (features, 9-point calibration fit, hysteresis, blink filter, gaze_step), `vision/gaze_tracker.py` (13 FPS on built-in camera), `vision/gaze_calibrate.py` (9 dots + 4-region accuracy), `app.py --gaze` (static arrows; same state machine + driver).
 - Known bug: `app.py --gaze` launches the tracker with multiprocessing spawn, which re-imports app.py (pygame) in the child -> SDL clash -> 0 samples. Proven: launched from a pygame-free script it sends 77 samples / 8 s, face 76/77. Fix next: run tracker as its own program sending JSON over localhost UDP (INTERFACES.md transport rule).

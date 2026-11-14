@@ -66,3 +66,28 @@ def test_relevant_class_ids_keeps_only_wheelchair_relevant_names():
 
     names = {0: "person", 56: "chair", 63: "laptop", 67: "cell phone", 45: "bowl", 60: "dining table"}
     assert relevant_class_ids(names) == [0, 56, 60]
+
+
+def test_boxes_conflict_when_overlapping_or_too_close():
+    from vision.detect_track import boxes_conflict
+
+    assert boxes_conflict((0, 0, 100, 100), (50, 50, 150, 150), min_gap_px=10)  # overlap
+    assert boxes_conflict((0, 0, 100, 100), (105, 0, 200, 100), min_gap_px=10)  # 5 px apart: too close
+    assert not boxes_conflict((0, 0, 100, 100), (120, 0, 200, 100), min_gap_px=10)  # 20 px apart
+    assert not boxes_conflict((0, 0, 100, 100), (0, 130, 100, 200), min_gap_px=10)  # apart vertically
+
+
+def test_separate_targets_skips_conflicts_and_fills_with_next_best():
+    from vision.detect_track import separate_targets
+
+    ranked = [track(1, x1=0), track(2, x1=40), track(3, x1=300), track(4, x1=600), track(5, x1=900)]
+    kept = separate_targets(ranked, frame_width=1000, max_n=4)  # min gap 50 px; #2 overlaps #1
+    assert [t.id for t in kept] == [1, 3, 4, 5]
+
+
+def test_new_box_gets_frequency_furthest_from_its_nearest_neighbor():
+    previous = {1: TARGET_FREQS_HZ[0]}  # 6.67 Hz already on the left box
+    centers = {1: (100, 100), 2: (300, 100)}  # box 2 is right next to box 1
+    result = assign_frequencies([1, 2], previous, centers)
+    assert result[1] == TARGET_FREQS_HZ[0]
+    assert result[2] == TARGET_FREQS_HZ[3]  # 15 Hz: as different from 6.67 Hz as possible

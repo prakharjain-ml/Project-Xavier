@@ -21,6 +21,7 @@ import queue
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 import pygame
 
@@ -175,7 +176,8 @@ def wait_until(deadline: float) -> float:
 
 
 def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames: int | None, has_vsync: bool,
-                deadline: float | None, status_queue: queue.Queue | None) -> FrameStats:
+                deadline: float | None, status_queue: queue.Queue | None,
+                key_sink: Callable[[pygame.event.Event], None] | None = None) -> FrameStats:
     """The 60 Hz loop. One iteration = one display refresh; frame_index drives every flicker."""
     schedule = flicker_schedule()
     font = pygame.font.Font(None, 28)
@@ -188,6 +190,8 @@ def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames:
                 return stats
             if event.type == pygame.KEYDOWN and event.key == pygame.K_f:
                 show_stats = not show_stats
+            elif key_sink is not None and event.type in (pygame.KEYDOWN, pygame.KEYUP):
+                key_sink(event)  # app.py reads arrows / SPACE / R here (one event loop, on the main thread)
         status = read_latest(status_queue, status)
         screen.fill(BLACK)
         if single_frames is None:

@@ -13,7 +13,7 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
   - Fri Nov 13, 2:45 pm (pre-kickoff spec reconciliation, Prakhar): Set Phase 1 kickoff constants in `docs/INTERFACES.md` (`CONF_THRESHOLD=0.15`, `MAX_SPEED=150`, `TURN_SPEED=120`, `OBSTACLE_STOP_CM=50`, `ALPHA_BAND_HZ=(8,13)`), made ultrasonic forward-obstacle stop non-latching (`STOPPED` when `(left + right) > 0` and `0 < distance_cm < OBSTACLE_STOP_CM`, `-1` on echo timeout) so in-place turns are never deadlocked, and aligned `docs/` + `.cursor/rules/` ahead of the 8:00 pm initial commit.
   - Sat Nov 14, ~3:00 am (Prakhar, via Claude Code; CONFIRM at 11 am sync): added `GoalHint` (vision -> control, Mode 2) and the JSON-over-UDP transport rule (`"v"` + `"type"`, invalid messages dropped) to `docs/INTERFACES.md`; `shared/protocol.py` updated with a doc-parity test. Reason: vision must never send wheel speeds, so a hoverboard or firmware change only touches `motors/` and `firmware/`.
 - Open questions: section 12 of the plan (venue permission, exact hardware). Paste each answer here when it arrives.
-- Blockers: none yet
+- Blockers: **EEG signal not usable yet** (Sat ~9 am analysis of `data/raw/BrainFlow-RAW_15hz_0.csv`): board streams at ~1000 Hz (not 250); huge 60 Hz hum on ch1/2/3/8 (bad contact or loose reference/bias clip); ch2==ch3 and ch5==ch6==ch7 (bridged or unconnected); no 15 Hz peak (SNR ~1). Fix electrodes, re-record, need SNR > 2 at 15 Hz before the decoder can drive.
 
 ---
 
@@ -56,6 +56,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, ~9:30 am - Claude Code (Opus 5.5), for Prakhar (Pratosh: please review)
+- Done: `motors/bridge_protocol.py` (C/S encode with clamp, D parse), `motors/mock_serial.py`, `motors/driver.py` (20 Hz, STOP when no fresh command for 0.2 s, survives unplug + reconnects, never auto-detects ports). `app.py`: keyboard stands in for the decoder (hold arrow = Intent, SPACE = E-STOP, R = re-arm) through the real state machine + driver; refuses ports that look like the OpenBCI dongle (`usbserial-DM`).
+- Next step (HUMAN, wheels off the ground, kill switch in hand, after `bridge.ino` is uploaded): `python app.py --keyboard --serial /dev/cu.<ESP32 port>`; hold Up -> dwell bar 1.5 s -> wheels forward; release -> stop; SPACE -> E-STOP; unplug USB -> stop within 200 ms.
+- Known bugs: none known. Caught in testing: driver thread crashed if a write failed (fixed); one vacuous stale-command test (fixed, mutation-checked).
+- Evidence (command + result): `python -m pytest -q` -> all pass (motors 22, app 10); end-to-end test: held FORWARD reaches the mock port as `C,…,150,150` only after >= 25 STOP lines (1.5 s dwell); removing the dwell fails 2 tests.
+
 ### [time] - [model/agent]
 - Done:
 - In progress (file:function, state):

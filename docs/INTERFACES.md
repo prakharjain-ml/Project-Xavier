@@ -87,15 +87,21 @@ Bridge rules (enforced on the ESP32, not trusted to the laptop):
 - Use a short echo timeout (~20 ms, ~340 cm max) on HC-SR04 so `pulseIn` never stalls the 200 ms watchdog loop, and map echo timeout (`0` us) to `distance_cm = -1` (clear/out-of-range), never `0 cm`.
 - Speeds are clamped again to `MAX_SPEED`. Malformed lines set speed to zero immediately.
 
-## ESP32 to hoverboard firmware (UART, VERIFY against the flashed firmware)
-Provisional, assuming the open-source hoverboard FOC firmware's USART command input:
-- 115200 baud, 8N1, 3.3 V logic. Never connect a 5 V TX pin, and never touch the sideboard's higher-voltage line
-- Frame: `uint16 start = 0xABCD`, `int16 steer`, `int16 speed`, `uint16 checksum = start ^ steer ^ speed`,
-  little-endian, 8 bytes, with speed = (left + right) / 2 and steer = (right - left) / 2
-- Sent every 20 to 50 ms. The firmware probably has its own serial timeout: VERIFY, but never rely on it
+## ESP32 to hoverboard firmware (UART) - verified against Keshav's flashed firmware, Sat Nov 14
+Board: YK187 master, GD32E235, RoboDurden Gen2.x-GD32 firmware (details: `firmware/README.md`).
+- 19200 baud, 8N1, 3.3 V logic, master board PB6 (TX) / PB7 (RX). Never connect a 5 V TX pin, and never touch the
+  sideboard's higher-voltage line
+- Command frame, 9 bytes, little-endian, packed: `uint8 '/'`, `int16 speed`, `int16 steer`, `uint8 wStateMaster`,
+  `uint8 wStateSlave`, `uint16 crc` (CRC16-CCITT, poly 0x1021, init 0, over the first 7 bytes), with
+  speed = (left + right) / 2 and steer = (right - left) / 2, both -1000..1000.
+  Known-good example: speed=100, steer=0 -> `2F 64 00 00 00 00 00 A6 BD` (CRC re-checked in Python)
+- The board sets speed 0 by itself after 500 ms without a valid frame (`LOST_CONNECTION_STOP_MILLIS`); the ESP32's
+  own 200 ms watchdog is still the one we rely on. Wheel signs: VERIFY wheels-up.
 
 ## BrainFlow facts the code relies on
 - `BoardShim(board_id, params)`, `prepare_session()`, `start_stream()`, `get_current_board_data(n)`,
   `stop_stream()`, `release_session()`
 - Channels and rate from `BoardShim.get_eeg_channels(board_id)` and `BoardShim.get_sampling_rate(board_id)`
+- MEASURED Sat Nov 14: our board streams at ~1000 Hz, not the 250 Hz assumed in the plan (36,192 rows in ~36 s of steady
+  timestamps). Never hard-code 250: always read the rate from BrainFlow.
 - Synthetic board for development; Cyton serial port is the dongle (`/dev/cu.usbserial-*`), VERIFY

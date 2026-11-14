@@ -94,3 +94,12 @@ def test_no_port_available_stays_disconnected_without_raising():
     time.sleep(0.2)
     assert not driver.status().connected
     driver.stop()
+
+
+def test_driver_skips_hash_info_lines_and_keeps_reading_status():
+    port = MockSerial(replies=["# LEFT board OK, RIGHT board NOT FOUND\n", "D,42,OK\n", "# info\n"])
+    driver = started(port)
+    time.sleep(0.15)
+    status = driver.status()
+    driver.stop()
+    assert status.bridge.distance_cm == 42 and status.bridge.state == "OK"

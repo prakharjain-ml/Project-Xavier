@@ -34,3 +34,9 @@ def test_parse_valid_status(line, expected):
 @pytest.mark.parametrize("line", ["", "garbage", "D,abc,OK", "D,10", "D,10,DANCING", "X,1,OK", "D,10,OK,extra"])
 def test_parse_rejects_malformed(line):
     assert parse_status(line) is None
+
+
+@pytest.mark.parametrize("line", ["# LEFT board OK, RIGHT board NOT FOUND", "# boot", "#"])
+def test_bridge_info_lines_starting_with_hash_are_ignored(line):
+    # Keshav's bridge.ino prints '#' info lines (board detection) between D lines: never parse them as status.
+    assert parse_status(line) is None

@@ -80,6 +80,8 @@ Laptop to bridge, sent every 50 ms by `motors/driver.py`, even when stopped:
 - `C,<seq>,<left>,<right>\n`: wheel speeds in firmware units, already clamped; `seq` counts up from 0
 - `S,<seq>\n`: explicit stop
 Bridge to laptop, sent every 50 ms:
+- `# <text>\n`: human-readable info lines (e.g. `# LEFT board OK, RIGHT board NOT FOUND`, from the bridge's
+  automatic TX/RX detection). Laptop parsers MUST ignore any line starting with `#` (added Sat Nov 14, Keshav).
 - `D,<distance_cm>,<state>\n`: `distance_cm` is a positive int (`-1` when out of range / echo timeout, never `0` for timeout); `state` is `OK`, `OBSTACLE`, `WATCHDOG` or `ESTOP`
 Bridge rules (enforced on the ESP32, not trusted to the laptop):
 - No valid laptop line for `BRIDGE_WATCHDOG_MS` means speed zero until lines resume.
@@ -88,8 +90,11 @@ Bridge rules (enforced on the ESP32, not trusted to the laptop):
 - Speeds are clamped again to `MAX_SPEED`. Malformed lines set speed to zero immediately.
 
 ## ESP32 to hoverboard firmware (UART) - verified against Keshav's flashed firmware, Sat Nov 14
+Battery: **7S Li-ion (~28 V)**, not the 36 V assumed in the plan (`BAT_CELLS=7`). The link to each board is its
+**5-pin master-slave plug** (P2 = board TX, P3 = board RX, P5 = ~14 V never connect); ESP32 GND must go to a
+SOLID ground (SWD GND hole or the thick black battery wire), not P1. Details: `firmware/hoverboard/DEBUG_LOG.md`.
 Board: YK187 master, GD32E235, RoboDurden Gen2.x-GD32 firmware (details: `firmware/README.md`).
-- 19200 baud, 8N1, 3.3 V logic, master board PB6 (TX) / PB7 (RX). Never connect a 5 V TX pin, and never touch the
+- 19200 baud, 8N1, 3.3 V logic, on each board's 5-pin plug (PA2 = TX on P2, PA3 = RX on P3). Never connect a 5 V TX pin, and never touch the
   sideboard's higher-voltage line
 - Command frame, 9 bytes, little-endian, packed: `uint8 '/'`, `int16 speed`, `int16 steer`, `uint8 wStateMaster`,
   `uint8 wStateSlave`, `uint16 crc` (CRC16-CCITT, poly 0x1021, init 0, over the first 7 bytes), with

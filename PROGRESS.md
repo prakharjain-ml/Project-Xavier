@@ -61,6 +61,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, evening - from Keshav's handoff (recorded by Claude Code for Prakhar)
+- Done: LEFT wheel (master board) WORKS end to end: laptop -> ESP32-S3 -> board, forward/back/turn + watchdog stop verified. Link = 5-pin plug (P2 TX, P3 RX), ESP32 GND to a SOLID ground (P1 gave 60 Hz hum). Battery is 7S (~28 V).
+- In progress: RIGHT wheel (slave board): unlock, motor test, flash `e235_single_usart1.bin`, wire GPIO15/16 + its own solid GND.
+- Next step (Keshav): finish the slave, fix wheel signs, retest on battery, pull USB mid-drive (stop < 0.5 s), PUSH the newest local files: `firmware/bridge/bridge.ino` + `hover_link.h`, bench test hold mode, firmware guards.
+- Integration: bridge now prints `#` info lines; laptop parser verified to ignore them (new tests); documented in INTERFACES.md.
+
 ### Sat Nov 14, ~9:30 am - Claude Code (Opus 5.5), for Prakhar (Pratosh: please review)
 - Done: `motors/bridge_protocol.py` (C/S encode with clamp, D parse), `motors/mock_serial.py`, `motors/driver.py` (20 Hz, STOP when no fresh command for 0.2 s, survives unplug + reconnects, never auto-detects ports). `app.py`: keyboard stands in for the decoder (hold arrow = Intent, SPACE = E-STOP, R = re-arm) through the real state machine + driver; refuses ports that look like the OpenBCI dongle (`usbserial-DM`).
 - Next step (HUMAN, wheels off the ground, kill switch in hand, after `bridge.ino` is uploaded): `python app.py --keyboard --serial /dev/cu.<ESP32 port>`; hold Up -> dwell bar 1.5 s -> wheels forward; release -> stop; SPACE -> E-STOP; unplug USB -> stop within 200 ms.

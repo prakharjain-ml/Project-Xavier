@@ -22,3 +22,13 @@ def test_left_of_the_chair_is_left_in_the_image():
 def test_points_behind_or_beyond_the_horizon_are_nan():
     px = project_floor(np.array([[-1.0, 0.0]]), W, H, HFOV, 1.0, 0)
     assert np.isnan(px).all()
+
+
+def test_horizon_is_mid_image_for_a_level_camera_and_moves_up_when_tilted_down():
+    from vision.floor import horizon_row, project_floor
+
+    assert horizon_row(1280, 720, 85.5, 0.0) == 360
+    tilted = horizon_row(1280, 720, 85.5, 15.0)
+    assert tilted < 360
+    far = project_floor(np.array([[500.0, 0.0]]), 1280, 720, 85.5, 1.0, 15.0)[0]  # floor point 500 m ahead
+    assert abs(far[1] - tilted) < 2  # a very distant floor point lands on the horizon row

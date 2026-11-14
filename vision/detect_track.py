@@ -22,7 +22,7 @@ import os
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
@@ -37,6 +37,8 @@ log = logging.getLogger("vision.detect_track")
 TARGET_FREQS_HZ = tuple(PROTOCOL_FREQS_HZ.values())
 MAX_TARGETS = 4
 DEFAULT_MODEL = os.path.expanduser(os.environ.get("YOLO_MODEL", "~/hp26-models/yolo11n.pt"))
+# Same detector plus a traced outline per object (drawn instead of boxes, and used to keep routes off objects).
+SEG_MODEL = os.path.expanduser(os.environ.get("YOLO_SEG_MODEL", "~/hp26-models/yolo11n-seg.pt"))
 DEFAULT_HFOV_DEG = 70.0  # horizontal field of view guess for a phone/webcam; calibrate with --hfov
 CAMERA_CALIBRATION_PATH = "data/raw/camera_calibration.json"  # gitignored; written by the distance calibration
 MIN_CONF = 0.4  # only SHOW objects YOLO is at least this sure about
@@ -78,6 +80,9 @@ class Track:
     conf: float
     bbox: tuple[float, float, float, float]  # x1, y1, x2, y2 in pixels
     distance_m: float | None
+    # Traced edge of the object, (N, 2) pixels, when the model is a segmentation model (yolo11n-seg); else None.
+    # Left out of == comparisons: comparing two arrays does not give a single True/False.
+    outline: np.ndarray | None = field(default=None, compare=False, repr=False)
 
 
 def load_hfov(path: str | Path = CAMERA_CALIBRATION_PATH) -> float:
@@ -185,12 +190,18 @@ def detect(model, frame: np.ndarray, focal_px: float, device: str, classes: list
     if result.boxes is None or result.boxes.id is None:  # no confirmed tracks this frame
         return []
     tracks = []
-    for tid, cls, conf, box in zip(result.boxes.id.tolist(), result.boxes.cls.tolist(),
-                                   result.boxes.conf.tolist(), result.boxes.xyxy.tolist()):
+    ids = result.boxes.id.tolist()
+    masks = getattr(result, "masks", None)  # only segmentation models return masks; one polygon per box, same order
+    outlines = masks.xy if masks is not None else [None] * len(ids)
+    for tid, cls, conf, box, outline in zip(ids, result.boxes.cls.tolist(), result.boxes.conf.tolist(),
+                                            result.boxes.xyxy.tolist(), outlines):
         if conf < MIN_CONF:
             continue  # tracked (keeps its ID) but not shown or offered as a target
         label = result.names[int(cls)]
-        tracks.append(Track(int(tid), label, conf, tuple(box), estimate_distance_m(label, box[3] - box[1], focal_px)))
+        if outline is not None and len(outline) < 3:  # an empty mask cannot be drawn or filled
+            outline = None
+        tracks.append(Track(int(tid), label, conf, tuple(box), estimate_distance_m(label, box[3] - box[1], focal_px),
+                            outline))
     return tracks
 
 

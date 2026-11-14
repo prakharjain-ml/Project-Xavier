@@ -30,3 +30,12 @@ def project_floor(points: np.ndarray, frame_w: int, frame_h: int, hfov_deg: floa
     out = np.stack([u, v], axis=1)
     out[depth < MIN_DEPTH_M] = np.nan
     return out
+
+
+def horizon_row(frame_w: int, frame_h: int, hfov_deg: float, pitch_deg: float) -> float:
+    """Image row of the horizon (where floor infinitely far away would appear). Nothing above it is floor.
+
+    From project_floor with distance -> infinity: v -> H/2 - focal * tan(tilt). Tilting the camera down moves
+    the horizon up the image."""
+    focal = (frame_w / 2) / math.tan(math.radians(hfov_deg) / 2)
+    return frame_h / 2 - focal * math.tan(math.radians(pitch_deg))

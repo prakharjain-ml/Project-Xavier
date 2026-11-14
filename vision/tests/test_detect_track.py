@@ -104,3 +104,49 @@ def test_load_hfov_reads_saved_calibration_or_falls_back(tmp_path):
     assert load_hfov(path) == 85.5
     path.write_text("not json")
     assert load_hfov(path) == DEFAULT_HFOV_DEG  # a broken file never crashes the app
+
+
+def _fake_result(masks):
+    import types
+
+    import torch
+
+    boxes = types.SimpleNamespace(id=torch.tensor([3.0, 5.0]), cls=torch.tensor([0.0, 0.0]),
+                                  conf=torch.tensor([0.9, 0.8]),
+                                  xyxy=torch.tensor([[10.0, 10.0, 110.0, 210.0], [300.0, 50.0, 400.0, 250.0]]))
+    return types.SimpleNamespace(boxes=boxes, masks=masks, names={0: "chair"})
+
+
+def _fake_model(result):
+    import types
+
+    return types.SimpleNamespace(track=lambda *args, **kwargs: [result])
+
+
+def test_detect_attaches_an_outline_per_object_when_the_model_returns_masks():
+    import types
+
+    import numpy as np
+
+    from vision.detect_track import detect
+
+    square = np.array([[10, 10], [110, 10], [110, 210], [10, 210]], np.float32)
+    masks = types.SimpleNamespace(xy=[square, np.zeros((0, 2), np.float32)])  # second mask came back empty
+
+    tracks = detect(_fake_model(_fake_result(masks)), np.zeros((480, 640, 3), np.uint8), 500.0, "cpu", None)
+
+    assert [t.id for t in tracks] == [3, 5]
+    assert np.array_equal(tracks[0].outline, square)
+    assert tracks[1].outline is None  # an empty mask is dropped, the box is still there
+
+
+def test_detect_without_masks_leaves_outline_empty_and_tracks_still_compare():
+    import numpy as np
+
+    from vision.detect_track import Track, detect
+
+    tracks = detect(_fake_model(_fake_result(None)), np.zeros((480, 640, 3), np.uint8), 500.0, "cpu", None)
+
+    assert all(t.outline is None for t in tracks)
+    with_outline = Track(1, "chair", 0.9, (0, 0, 1, 1), 2.0, np.zeros((4, 2)))
+    assert with_outline == Track(1, "chair", 0.9, (0, 0, 1, 1), 2.0)  # the outline does not take part in ==

@@ -1,0 +1,338 @@
+diff --git a/HoverBoardGigaDevice/Inc/config.h b/HoverBoardGigaDevice/Inc/config.h
+index 75aee4d..8a01593 100644
+--- a/HoverBoardGigaDevice/Inc/config.h
++++ b/HoverBoardGigaDevice/Inc/config.h
+@@ -27,7 +27,9 @@
+ 		//#define STM32F103 	// uncomment if your board has stm32f103 instead of gd32f103. Will give the max 64 Mhz for STM32
+ 			// Warning: will overclock gd32f103 mcu to 124 MHz and doubling current consumption. Keep GD32 to its 72 Mhz.
+ 	#elif GD32E230		// TARGET = 3
+-		#define LAYOUT 1
++		#ifndef LAYOUT		// HackPrinceton: allow -D LAYOUT=9 from platformio.ini
++			#define LAYOUT 1
++		#endif
+ 	#elif MM32SPIN05	// TARGET = 4
+ 		#define LAYOUT 1
+ 	#endif
+@@ -40,7 +42,9 @@
+ 
+ 	//#define SPEED_AsRevsPerSec		// Will overflow at 327 revs/s = 19620 rpm. Hoverboard motor: 14 rpm/V * 50V = 700 rpm
+ 
+-	#define BAT_CELLS         	10        // battery number of cells. Normal Hoverboard battery: 10s
++	#ifndef BAT_CELLS
++		#define BAT_CELLS         	10        // battery number of cells. Normal Hoverboard battery: 10s
++	#endif
+ 	//#define BATTERY_LOW_SHUTOFF		// will shut off the board below BAT_LOW_DEAD = BAT_CELLS * CELL_LOW_DEAD, 
+ 	#define BATTERY_LOW_BEEP		// will start beeping for different battery low lwevels
+ 
+@@ -51,12 +55,16 @@
+ 
+ 	//#define MASTER		// uncomment for MASTER firmware.
+ 	//#define SLAVE			// uncomment for SLAVE firmware.
+-	#define SINGLE			// uncomment if firmware is for single board and no master-slave dual board setup
++	#if !defined(MASTER) && !defined(SLAVE)	// HackPrinceton: MASTER/SLAVE can come from platformio.ini
++		#define SINGLE			// uncomment if firmware is for single board and no master-slave dual board setup
++	#endif
+ 
+ 	#if defined(MASTER) || defined(SINGLE)
+-		
++
+ 		// choose only one 'remote' to control the motor
++		#if !defined(REMOTE_UART)	// HackPrinceton: REMOTE_UART can come from platformio.ini
+ 		#define REMOTE_DUMMY
++		#endif
+ 				#ifdef REMOTE_DUMMY
+ 					#define REMOTE_PERIOD 6 // 3 = 3 seconds period of the zigzag curve
+ 					#define TEST_HALL2LED	// led the 3-led panel blink according to the hall sensors
+@@ -110,7 +118,7 @@
+ 																		//	2 is usually PB10/PB11 on stm32f103 boards
+ 	#endif
+ 	
+-	#if defined(REMOTE_UART) || defined(REMOTE_UARTBUS) || defined(REMOTE_CRSF) || defined(REMOTE_ROS2)
++	#if (defined(REMOTE_UART) || defined(REMOTE_UARTBUS) || defined(REMOTE_CRSF) || defined(REMOTE_ROS2)) && !defined(REMOTE_USART)	// HackPrinceton: -D REMOTE_USART=1 = 4-pin master-slave plug
+ 		#define REMOTE_USART				0 	// 	1 is usually PA2/PA3 and the original master-slave 4pin header
+ 																		//	0 is usually PB6/PB7 and the empty header close to the flash-header
+ 																		//	2 is usually PB10/PB11 on stm32f103 boards
+diff --git a/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h b/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h
+new file mode 100644
+index 0000000..220af98
+--- /dev/null
++++ b/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h
+@@ -0,0 +1,74 @@
++// HackPrinceton 2026 - YK187 split board with GD32E235 (runs the GD32E230 TARGET 3 build)
++// Hall pins found 2026-11-14 by turning the wheel by hand and watching GPIO input registers:
++//   PA0, PF1, PC15  (sequence one direction, as (PA0,PF1,PC15): 010 011 001 101 100 110)
++// VBATT PA4 confirmed by autodetect reading ~31 V. Everything else copied from layout 2-3-2 / 2-3-1
++// (same E230 board family) and not yet verified.
++//
++// Test variants selected with build flags:
++//   HP_HALL_PERM 0..5  : which of PA0/PF1/PC15 is HALL_A/B/C
++//   HP_HILO_SWAP 0/1   : 0 = like 2-3-2 (GH=PA10), 1 = like 2-3-1 (GH=PB15, hi/lo swapped)
++
++#ifndef HP_HALL_PERM
++	#define HP_HALL_PERM 2		// test03 = smoothest (2026-11-14)
++#endif
++#ifndef HP_HILO_SWAP
++	#define HP_HILO_SWAP 0
++#endif
++
++#if HP_HALL_PERM == 0
++	#define HALL_A PA0
++	#define HALL_B PF1
++	#define HALL_C PC15
++#elif HP_HALL_PERM == 1
++	#define HALL_A PA0
++	#define HALL_B PC15
++	#define HALL_C PF1
++#elif HP_HALL_PERM == 2
++	#define HALL_A PF1
++	#define HALL_B PA0
++	#define HALL_C PC15
++#elif HP_HALL_PERM == 3
++	#define HALL_A PF1
++	#define HALL_B PC15
++	#define HALL_C PA0
++#elif HP_HALL_PERM == 4
++	#define HALL_A PC15
++	#define HALL_B PA0
++	#define HALL_C PF1
++#else
++	#define HALL_A PC15
++	#define HALL_B PF1
++	#define HALL_C PA0
++#endif
++
++#define PHASE_A         PB0		// from 2-3-2, not verified
++#define PHASE_B         PB1		// from 2-3-2, not verified
++
++#define VBATT           PA4		// confirmed
++#define CURRENT_DC      PA6		// from 2-3-1/2-3-2, not verified
++#define SELF_HOLD       PB2		// from 2-3-1/2-3-2, not verified
++// BUTTON not defined on purpose: DISABLE_BUTTON is used for now (button bridged / board on charger)
++
++// Brushless Control DC (BLDC) defines
++#if HP_HILO_SWAP == 0
++	#define BLDC_GH PA10
++	#define BLDC_GL PB15
++	#define BLDC_BH PA9
++	#define BLDC_BL PB14
++	#define BLDC_YH PA8
++	#define BLDC_YL PB13
++#else
++	#define BLDC_GH PB15
++	#define BLDC_GL PA10
++	#define BLDC_BH PB14
++	#define BLDC_BL PA9
++	#define BLDC_YH PB13
++	#define BLDC_YL PA8
++#endif
++#define TIMER_BLDC_PULLUP	GPIO_PUPD_NONE
++
++// USART0 = PB6/PB7 (ESP32 later), USART1 = PA2/PA3 (master-slave cable)
++#define USART0_TX	PB6
++#define USART0_RX	PB7
++#define USART1_TX	PA2
++#define USART1_RX	PA3
+diff --git a/HoverBoardGigaDevice/Src/RemoteAutodetect.c b/HoverBoardGigaDevice/Src/RemoteAutodetect.c
+index a5431a9..e008d33 100644
+--- a/HoverBoardGigaDevice/Src/RemoteAutodetect.c
++++ b/HoverBoardGigaDevice/Src/RemoteAutodetect.c
+@@ -836,7 +836,11 @@ void AutodetectScan(uint16_t buzzerTimer)
+ 		}
+ 		break;
+ 	case AUTODETECT_Stage_VBatt:
+-		SetBldcInput(	(msTicks % 4000) < 2000 ? -300 : 0);	// strong motor to see a load when hand on motor
++		#ifdef AD_SAFE_PWM	// HackPrinceton: no motor load needed just to read the voltage
++			SetBldcInput(0);
++		#else
++			SetBldcInput(	(msTicks % 4000) < 2000 ? -300 : 0);	// strong motor to see a load when hand on motor
++		#endif
+ 		fVBatt = fVBatt * 0.9 + ((float)adc_buffer.v_batt * ADC_BATTERY_VOLT) * 0.1;
+ 		//pinModePull(aoPin[iTest].i,GPIO_MODE_INPUT,(buzzerTimer%32000 < 16000) ? GPIO_PUPD_PULLDOWN : GPIO_PUPD_PULLUP);
+ 		if (buzzerTimer % 16000 == 0)	// 16 kHz
+@@ -874,7 +878,11 @@ void AutodetectScan(uint16_t buzzerTimer)
+ 			fCurrentDC = ((adc_buffer.v_batt - iOffsetDC) * MOTOR_AMP_CONV_DC_AMP);
+ 			if (bCurrentManualMode)
+ 			{
+-				SetBldcInput(iTimeCountdown>2000 ? 0 : -300);	// strong motor to see a load when hand on motor
++				#ifdef AD_SAFE_PWM
++					SetBldcInput(iTimeCountdown>2000 ? 0 : AD_SAFE_PWM);
++				#else
++					SetBldcInput(iTimeCountdown>2000 ? 0 : -300);	// strong motor to see a load when hand on motor
++				#endif
+ 				if (buzzerTimer % 3200 == 0)	// 16 kHz
+ 				{
+ 					sprintf(sMessage,"%s: CURRENT_DC ?= " F2IF "\n",aoPin[iTest].s,F2I(fCurrentDC));
+@@ -884,7 +892,11 @@ void AutodetectScan(uint16_t buzzerTimer)
+ 			{
+ 				#define MS_INTERVAL 500
+ 				uint16_t iInterval = MS_INTERVAL - (iTimeCountdown % MS_INTERVAL);
+-				int16_t iPwm = iInterval<(MS_INTERVAL/2) ? -700 : 700;
++				#ifdef AD_SAFE_PWM
++					int16_t iPwm = iInterval<(MS_INTERVAL/2) ? AD_SAFE_PWM : -AD_SAFE_PWM;
++				#else
++					int16_t iPwm = iInterval<(MS_INTERVAL/2) ? -700 : 700;
++				#endif
+ 				SetBldcInput(	iPwm);	// strong motor to see a load when hand on motor
+ 				
+ 				iInterval = iInterval % (MS_INTERVAL/2);
+@@ -1202,7 +1214,11 @@ uint8_t AutodetectBldc(uint8_t posNew,uint16_t buzzerTimer)
+ 
+ 		//SetBldcInput(msTicks > 500 ? -200 : (int32_t)msTicks * -2 / 5);
+ 		//SetBldcInput(fVBattFound > 30 ? -150 : -200);
+-		SetBldcInput(-120 - 4*(42-(int16_t)fVBattFound));		// lower vbatt needs higher pwm to make motor spin
++		#ifdef AD_SAFE_PWM	// HackPrinceton: low fixed pwm so a ~2A charger does not brown out
++			SetBldcInput(AD_SAFE_PWM);
++		#else
++			SetBldcInput(-120 - 4*(42-(int16_t)fVBattFound));		// lower vbatt needs higher pwm to make motor spin
++		#endif
+ 		//SetBldcInput(0);
+ 		
+ 		if (msTicksWait > msTicks)	// wait for last sMessage to be sent
+diff --git a/HoverBoardGigaDevice/Src/remoteDummy.c b/HoverBoardGigaDevice/Src/remoteDummy.c
+index daefc3c..075185a 100644
+--- a/HoverBoardGigaDevice/Src/remoteDummy.c
++++ b/HoverBoardGigaDevice/Src/remoteDummy.c
+@@ -203,7 +203,11 @@ void RemoteUpdate(void)
+ 			msTicksInit = msTicks;	// to start zigzag from 0 no matter how long the startup in main.c takes
+ 			switch(iDrivingMode)	//  0=pwm, 1=speed in revs*1024, (not yet: 3=torque, 4=iOdometer)
+ 			{
++				#ifdef HP_DUMMY_MAX
++				case 0: iRemoteMax = HP_DUMMY_MAX; break;	// HackPrinceton: gentler test on the charger
++				#else
+ 				case 0: iRemoteMax = 200; break;	// pwm value
++				#endif
+ 				case 1: iRemoteMax = 1.0 *1024; break;	// 1.5*1024 = max speed 1.5 revs/s
+ 				case 2: iRemoteMax = 5.0 *1024; break;	// 1.5*1024 = max speed 1.5 Nm (Newton meter)
+ 				case 3: iRemoteMax = 90; break;	// 90 = 360 deg
+diff --git a/HoverBoardGigaDevice/Src/setup.c b/HoverBoardGigaDevice/Src/setup.c
+index 219825a..6e5d8fb 100644
+--- a/HoverBoardGigaDevice/Src/setup.c
++++ b/HoverBoardGigaDevice/Src/setup.c
+@@ -941,7 +941,11 @@ void USART2_Init(uint32_t iBaud)	// only for target==2 = gd32f103
+ 
+ static uint32_t get_flash_size(void) 	// Helper functions for flash configuration by Deepseek
+ {
+-	return (*(volatile uint16_t *)(0x1FFFF7E0)) * 1024; // Flash size in bytes
++	#ifdef FLASH_SIZE_OVERRIDE	// HackPrinceton GD32E235: size register is not trustworthy, program is >32kB
++		return FLASH_SIZE_OVERRIDE;
++	#else
++		return (*(volatile uint16_t *)(0x1FFFF7E0)) * 1024; // Flash size in bytes
++	#endif
+ }
+ static uint32_t get_page_size(uint32_t flash_size)
+ {
+diff --git a/HoverBoardGigaDevice/platformio.ini b/HoverBoardGigaDevice/platformio.ini
+index fd707ae..71dd745 100644
+--- a/HoverBoardGigaDevice/platformio.ini
++++ b/HoverBoardGigaDevice/platformio.ini
+@@ -64,3 +64,110 @@ board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
+ extra_scripts = add_RTT_task.py
+     add_RTT_console.py
+ 
++
++
++; ---- added for HackPrinceton: GD32E235 board (no external crystal) ----
++; autodetect over RTT, internal clock (IRC8M/2 -> PLL 72 MHz)
++[env:e230_autodetect_rtt]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D REMOTE_AUTODETECT
++    -D RTT_REMOTE
++    -D AD_SAFE_PWM=-80
++    -D FLASH_SIZE_OVERRIDE=65536
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
++
++; motor test build for our board: layout 2-3-9, SINGLE, REMOTE_DUMMY zigzag (gentle), internal clock
++[env:e235_test]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D LAYOUT=9
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D FLASH_SIZE_OVERRIDE=65536
++    -D BAT_CELLS=7
++    -D DISABLE_BUTTON
++    -D DISABLE_CHARGESTATE
++    -D HP_DUMMY_MAX=120
++    ${sysenv.HP_FLAGS}
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
++
++; ---- real firmware for our board (layout 2-3-9) ----
++; MASTER: listens to ESP32 on USART0 PB6/PB7 (19200 baud), talks to slave over USART1 PA2/PA3 (original cable)
++[env:e235_master]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D LAYOUT=9
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D FLASH_SIZE_OVERRIDE=65536
++    -D BAT_CELLS=7
++    -D DISABLE_BUTTON
++    -D DISABLE_CHARGESTATE
++    -D MASTER
++    -D REMOTE_UART
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
++
++[env:e235_slave]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D LAYOUT=9
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D FLASH_SIZE_OVERRIDE=65536
++    -D BAT_CELLS=7
++    -D DISABLE_BUTTON
++    -D DISABLE_CHARGESTATE
++    -D SLAVE
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
++
++; SINGLE board + ESP32 on PB6/PB7 - to test the master board alone with the ESP32 before the slave is flashed
++[env:e235_single_uart]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D LAYOUT=9
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D FLASH_SIZE_OVERRIDE=65536
++    -D BAT_CELLS=7
++    -D DISABLE_BUTTON
++    -D DISABLE_CHARGESTATE
++    -D REMOTE_UART
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
++
++; SINGLE board driven by the ESP32 through the 4-pin master-slave plug (USART1 = PA2/PA3).
++; Used on BOTH boards (left and right), each with its own ESP32 UART. No soldering needed:
++; the TX/RX pads of USART0 are not connected on the YK187 board (R10/R11 not fitted).
++[env:e235_single_usart1]
++board = genericGD32E230C8
++framework = spl
++build_flags = 
++    -D GD32E230
++    -D TARGET=3
++    -D LAYOUT=9
++    -D __SYSTEM_CLOCK_72M_PLL_IRC8M_DIV2=72000000UL
++    -D __PIO_DONT_SET_CLOCK_SOURCE__
++    -D FLASH_SIZE_OVERRIDE=65536
++    -D BAT_CELLS=7
++    -D DISABLE_BUTTON
++    -D DISABLE_CHARGESTATE
++    -D REMOTE_UART
++    -D REMOTE_USART=1
++board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld

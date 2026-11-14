@@ -1,0 +1,7 @@
+# OpenOCD is downloaded by each person (see firmware/README.md)
+tools/xpack-openocd-*/
+*.zip
+# debug output written by the flash tools
+flash_tools/ram_dump.bin
+flash_tools/autodetect_log.txt
+flash_tools/factory_*.bin

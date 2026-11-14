@@ -23,7 +23,8 @@ import numpy as np
 BLINK_MAX_S = 0.4  # a normal blink is 0.1-0.3 s; closures shorter than this keep the last gaze
 CLOSED_FRACTION = 0.5  # eyes count as closed when openness drops below half of the rider's calibrated openness
 SMOOTH_ALPHA = 0.3  # how much of each new gaze point to take (lower = steadier but laggier)
-REGION_MARGIN = 0.03  # hysteresis: 3% of the screen inside a region to enter it, 3% outside to leave it
+REGION_MARGIN = 0.02  # enter a region only when 2% of the screen inside its edge
+EXIT_MARGIN = 0.08  # ...but leave it only when 8% outside: gaze wobble near an edge must not reset the dwell
 RIDGE_LAMBDA = 0.05  # per sample: keeps the fit from chasing noise (scaled by the number of samples)
 MIN_CALIBRATION_POINTS = 5
 
@@ -38,11 +39,13 @@ class LM:
 
 # Screen regions for the 4 arrows (x1, y1, x2, y2), normalized. The centre belongs to no arrow: resting your eyes
 # in the middle of the screen selects nothing, so the chair stays stopped.
+# Sized from live tests: smaller regions let webcam gaze wobble out before the 1.5 s dwell finished. Left/right
+# are full-height strips, forward/back reach 38% in from the edge, and only a central band means "stop".
 ARROW_REGIONS: dict[str, tuple[float, float, float, float]] = {
-    "FWD": (0.25, 0.0, 0.75, 0.33),
-    "BACK": (0.25, 0.67, 0.75, 1.0),
-    "LEFT": (0.0, 0.25, 0.25, 0.75),
-    "RIGHT": (0.75, 0.25, 1.0, 0.75),
+    "FWD": (0.25, 0.0, 0.75, 0.38),
+    "BACK": (0.25, 0.62, 0.75, 1.0),
+    "LEFT": (0.0, 0.0, 0.25, 1.0),
+    "RIGHT": (0.75, 0.0, 1.0, 1.0),
 }
 
 
@@ -157,10 +160,11 @@ def _inside(point: tuple[float, float], box: tuple[float, float, float, float], 
 
 
 def pick_region(point: tuple[float, float], regions: dict[str, tuple[float, float, float, float]],
-                current: str | None, margin: float = REGION_MARGIN) -> str | None:
-    """Which region the gaze is in. Hysteresis: keep the current region until the gaze is clearly outside it,
-    and enter a new one only when clearly inside, so the choice does not flicker at the borders."""
-    if current in regions and _inside(point, regions[current], margin):
+                current: str | None, margin: float = REGION_MARGIN,
+                exit_margin: float = EXIT_MARGIN) -> str | None:
+    """Which region the gaze is in. Hysteresis: enter a region only when `margin` inside it, keep it until the
+    gaze is `exit_margin` outside it, so the choice does not flicker or reset at the borders."""
+    if current in regions and _inside(point, regions[current], exit_margin):
         return current
     for name, box in regions.items():
         if _inside(point, box, -margin):

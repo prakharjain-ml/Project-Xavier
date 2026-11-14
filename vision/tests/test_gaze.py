@@ -211,3 +211,21 @@ def test_calibration_round_trip_keeps_degree(tmp_path):
     cal = fit_calibration(_noisy_grid_samples(per_point=5), open_ratio=0.25, degree=1)
     save_calibration(cal, tmp_path / "c.json")
     assert load_calibration(tmp_path / "c.json") == cal
+
+
+def test_wobble_near_an_edge_does_not_leave_the_region():
+    from vision.gaze import EXIT_MARGIN, REGION_MARGIN
+
+    assert EXIT_MARGIN > REGION_MARGIN  # harder to leave than to enter
+    # FWD ends at y=0.38. A rider holding gaze on it wobbles to y=0.43 (5% past the edge): still FWD.
+    assert pick_region((0.5, 0.43), ARROW_REGIONS, current="FWD") == "FWD"
+    assert pick_region((0.5, 0.43), ARROW_REGIONS, current=None) is None  # but you cannot ENTER from there
+
+
+def test_arrow_regions_do_not_overlap():
+    from itertools import combinations
+
+    for (_, a), (_, b) in combinations(ARROW_REGIONS.items(), 2):
+        overlap_w = min(a[2], b[2]) - max(a[0], b[0])
+        overlap_h = min(a[3], b[3]) - max(a[1], b[1])
+        assert overlap_w <= 0 or overlap_h <= 0

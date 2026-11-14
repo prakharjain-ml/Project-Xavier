@@ -225,8 +225,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-calibration", action="store_true",
                         help="reuse the saved calibration (only if you have not moved since)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    if args.skip_calibration and not os.path.exists(args.calibration):
-        log.error("no gaze calibration at %s: run `python -m vision.gaze_calibrate` first", args.calibration)
+    from vision.gaze_link import calibrate_eyetrax, calibration_hint, calibration_ready, gaze_backend
+
+    backend = gaze_backend()
+    if args.skip_calibration and not calibration_ready(backend, args.calibration):
+        log.error("no gaze calibration for the %s tracker: run `%s` first", backend, calibration_hint(backend))
         return 2
     import cv2
     from ultralytics import YOLO
@@ -247,11 +250,14 @@ def main(argv: list[str] | None = None) -> int:
         args.eye_camera = eye if args.eye_camera == "auto" else int(args.eye_camera)
         args.source = str(forward) if args.source == "auto" else args.source
         log.info("eye camera = %s, forward camera = %s", args.eye_camera, args.source)
-    if not args.skip_calibration and not calibrate_now(cv2, int(args.eye_camera), args.calibration):
-        return 1
+    if not args.skip_calibration:  # calibrate in the rider's CURRENT seat (an old calibration drifted badly)
+        ok = (calibrate_eyetrax(args.eye_camera) if backend == "eyetrax"
+              else calibrate_now(cv2, int(args.eye_camera), args.calibration))
+        if not ok:
+            return 1
     reader = LatestFrameReader(parse_source(args.source), opener=open_capture)
     reader.start()
-    process, gaze_queue, gaze_stop = start_gaze_tracker(int(args.eye_camera), args.calibration)
+    process, gaze_queue, gaze_stop = start_gaze_tracker(int(args.eye_camera), args.calibration, backend)
     model = YOLO(DEFAULT_MODEL)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)

@@ -5,6 +5,7 @@ import re
 
 os.environ["SDL_VIDEODRIVER"] = "dummy"
 os.environ["SDL_AUDIODRIVER"] = "dummy"
+os.environ["GAZE_BACKEND"] = "builtin"  # tests must never start EyeTrax / open a camera
 
 import pygame  # noqa: E402
 import pytest  # noqa: E402

@@ -45,7 +45,7 @@ from shared.protocol import (
     Target,
 )
 from vision.gaze import ARROW_REGIONS, pick_region  # numpy only: no cv2 here
-from vision.gaze_link import start_gaze_tracker  # no cv2 / pygame inside
+from vision.gaze_link import calibration_hint, calibration_ready, gaze_backend, start_gaze_tracker
 from vision.gaze_tracker import CALIBRATION_PATH  # module top imports no cv2/mediapipe
 
 log = logging.getLogger("app")
@@ -212,8 +212,9 @@ def main(argv: list[str] | None = None, start_events: list[str] | None = None) -
         log.error("%s looks like the OpenBCI dongle, not the ESP32. Refusing to send motor commands to it.",
                   args.serial)
         return 2
-    if args.gaze and not os.path.exists(args.calibration):
-        log.error("no gaze calibration at %s: run `python -m vision.gaze_calibrate` first", args.calibration)
+    if args.gaze and not calibration_ready(gaze_backend(), args.calibration):
+        log.error("no gaze calibration for the %s tracker: run `%s` first", gaze_backend(),
+                  calibration_hint(gaze_backend()))
         return 2
     mock = MockSerial() if args.mock else None
     driver = MotorDriver((lambda: mock) if mock else (lambda: open_serial(args.serial)))

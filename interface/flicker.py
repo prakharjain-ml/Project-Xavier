@@ -34,6 +34,7 @@ from interface.timing import (
     pacing_ok,
     update_frame_stats,
 )
+from shared.latest import offer_latest  # noqa: F401  (re-exported: app.py and tests import it from here)
 from shared.protocol import DISPLAY_HZ, ControlStatus, State, Target, frames_per_cycle
 
 log = logging.getLogger("interface.flicker")
@@ -52,18 +53,6 @@ WARNING_LINES = (
     "Press SPACE to begin.  Press ESC to quit.",
 )
 KEYS = {"space": pygame.K_SPACE, "escape": pygame.K_ESCAPE}
-
-
-def offer_latest(q: queue.Queue, item) -> None:
-    """Put item into a maxsize=1 queue, replacing whatever is waiting. Never blocks the caller."""
-    try:
-        q.get_nowait()
-    except queue.Empty:
-        pass
-    try:
-        q.put_nowait(item)
-    except queue.Full:  # another producer refilled it in between; dropping this one is fine
-        pass
 
 
 def read_latest(q: queue.Queue | None, current: ControlStatus) -> ControlStatus:

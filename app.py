@@ -33,6 +33,7 @@ from interface.flicker import KEYS, offer_latest, open_display, run_flicker, sho
 from interface.timing import FrameStats
 from motors.driver import MotorDriver, open_serial
 from motors.mock_serial import MockSerial
+from shared.latest import drain_newest
 from shared.protocol import (
     CONTROL_HZ,
     STALE_INTENT_S,
@@ -58,34 +59,57 @@ def looks_like_openbci_dongle(port: str) -> bool:
     return OPENBCI_DONGLE_MARK in port
 
 
+class OperatorKeys:
+    """Teammate keys in every input mode: SPACE = operator E-STOP, R = re-arm. One-shot presses, thread-safe
+    (key events arrive on the main thread, the control thread consumes them)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stop = self._rearm = False
+
+    def handle(self, event: pygame.event.Event) -> bool:
+        """Record SPACE / R. Returns True if the event was an operator key."""
+        if event.type != pygame.KEYDOWN or event.key not in (pygame.K_SPACE, pygame.K_r):
+            return False
+        with self._lock:
+            if event.key == pygame.K_SPACE:
+                self._stop = True
+            else:
+                self._rearm = True
+        return True
+
+    def take(self, now: float) -> tuple[tuple[StopRequest, ...], bool]:
+        """(stop requests, re-arm) pressed since the last tick, then cleared."""
+        with self._lock:
+            stop, rearm = self._stop, self._rearm
+            self._stop = self._rearm = False
+        return ((StopRequest(StopSource.OPERATOR, now),) if stop else ()), rearm
+
+
 class KeyboardIntentSource:
     """Turns key events (main thread) into Intents and operator events (control thread). Thread-safe."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._held: frozenset[Target] = frozenset()
-        self._stop_pressed = False
-        self._rearm_pressed = False
+        self._operator = OperatorKeys()
 
     def on_event(self, event: pygame.event.Event) -> None:
-        with self._lock:
-            target = ARROW_TARGETS.get(event.key)
-            if target is not None:
+        if self._operator.handle(event):
+            return
+        target = ARROW_TARGETS.get(event.key)
+        if target is not None:
+            with self._lock:
                 self._held = self._held | {target} if event.type == pygame.KEYDOWN else self._held - {target}
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                self._stop_pressed = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                self._rearm_pressed = True
 
     def snapshot(self, now: float) -> ControlInputs:
         """Inputs for one control tick. SPACE / R are one-shot: consumed here."""
         with self._lock:
-            held, stop, rearm = self._held, self._stop_pressed, self._rearm_pressed
-            self._stop_pressed = self._rearm_pressed = False
+            held = self._held
+        stops, rearm = self._operator.take(now)
         # Exactly one arrow = that target; none or several = NONE (ambiguous input never moves the chair).
         target = next(iter(held)) if len(held) == 1 else Target.NONE
         intent = Intent(target=target, confidence=1.0 if target != Target.NONE else 0.0, t=now)
-        stops = (StopRequest(StopSource.OPERATOR, now),) if stop else ()
         return ControlInputs(intent=intent, stop_requests=stops, rearm=rearm)
 
 
@@ -101,19 +125,16 @@ class GazeIntentSource:
         self._lock = threading.Lock()
         self._sample = None  # newest GazeSample (only touched by the control thread)
         self._region: str | None = None  # current region, kept for hysteresis
-        self._stop_pressed = False
-        self._rearm_pressed = False
+        self._operator = OperatorKeys()
         self._recentre_pressed = False
         self._offset = (0.0, 0.0)  # added to every gaze point; set by re-centring (C key)
         self._cursor: tuple[float, float] | None = None  # for the on-screen gaze dot
 
     def on_event(self, event: pygame.event.Event) -> None:
-        with self._lock:
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                self._stop_pressed = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                self._rearm_pressed = True
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+        if self._operator.handle(event):
+            return
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+            with self._lock:
                 self._recentre_pressed = True  # rider is looking at the centre "+" right now
 
     def cursor(self) -> tuple[float, float] | None:
@@ -121,18 +142,11 @@ class GazeIntentSource:
         with self._lock:
             return self._cursor
 
-    def _newest_sample(self):
-        while True:  # drain: only the newest sample matters
-            try:
-                self._sample = self._queue.get_nowait()
-            except queue.Empty:
-                return self._sample
-
     def snapshot(self, now: float) -> ControlInputs:
-        sample = self._newest_sample()
+        self._sample = sample = drain_newest(self._queue, self._sample)  # only the newest gaze sample matters
+        stops, rearm = self._operator.take(now)
         with self._lock:
-            stop, rearm, recentre = self._stop_pressed, self._rearm_pressed, self._recentre_pressed
-            self._stop_pressed = self._rearm_pressed = self._recentre_pressed = False
+            recentre, self._recentre_pressed = self._recentre_pressed, False
         fresh = sample is not None and sample.point is not None and now - sample.t <= STALE_INTENT_S
         if fresh and recentre:
             # Drift correction: whatever we read while the rider looks at the centre becomes (0.5, 0.5).
@@ -144,7 +158,6 @@ class GazeIntentSource:
         self._region = pick_region(point, ARROW_REGIONS, self._region) if point else None
         target = Target(self._region) if self._region else Target.NONE
         intent = Intent(target=target, confidence=1.0 if target != Target.NONE else 0.0, t=now)
-        stops = (StopRequest(StopSource.OPERATOR, now),) if stop else ()
         return ControlInputs(intent=intent, stop_requests=stops, rearm=rearm)
 
 

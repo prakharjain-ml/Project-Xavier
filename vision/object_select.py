@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import queue
 import subprocess
 import sys
 import time
@@ -24,6 +23,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from shared.latest import drain_newest
 from shared.protocol import DWELL_S, STALE_INTENT_S
 from vision.detect_track import (
     DEFAULT_MODEL,
@@ -115,14 +115,6 @@ def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now:
     return (min(1.0, max(0.0, sample.point[0] + offset[0])), min(1.0, max(0.0, sample.point[1] + offset[1])))
 
 
-def newest(q: queue.Queue, current):
-    while True:
-        try:
-            current = q.get_nowait()
-        except queue.Empty:
-            return current
-
-
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
          status: str) -> np.ndarray:
     canvas = cv2.resize(frame, (CANVAS_W, CANVAS_H))
@@ -168,7 +160,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             targets = separate_targets(pick_targets(tracks, first_seen, max_n=len(tracks)), frame.shape[1], MAX_TARGETS)
         if frame is None:
             continue
-        sample = newest(gaze_queue, sample)
+        sample = drain_newest(gaze_queue, sample)
         if key == ord("c") and sample is not None and sample.point is not None:
             offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
             log.info("re-centred: offset %.3f, %.3f", *offset)

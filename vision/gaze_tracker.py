@@ -13,10 +13,9 @@ from __future__ import annotations
 import logging
 import os
 import time
-from queue import Empty, Full
-
 import numpy as np
 
+from shared.latest import offer_latest  # noqa: F401  (re-exported for vision/gaze_link.py)
 from vision.gaze import GazeState, gaze_step, load_calibration
 
 log = logging.getLogger("vision.gaze_tracker")
@@ -69,18 +68,6 @@ class FaceLandmarkSource:
     def close(self) -> None:
         self._landmarker.close()
         self._cap.release()
-
-
-def offer_latest(q, item) -> None:
-    """Latest-only put for a maxsize=1 queue. Never blocks."""
-    try:
-        q.get_nowait()
-    except Empty:
-        pass
-    try:
-        q.put_nowait(item)
-    except Full:
-        pass
 
 
 def run_gaze_process(emit, camera_index: int, calibration_path: str, should_stop,

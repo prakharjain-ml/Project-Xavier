@@ -32,6 +32,7 @@ from shared.latest import drain_newest
 from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, State, StopRequest, StopSource, Target
 from vision.detect_track import (
     DEFAULT_MODEL,
+    SEG_MODEL,
     MAX_TARGETS,
     Track,
     detect,
@@ -42,6 +43,7 @@ from vision.detect_track import (
     separate_targets,
     steering_offset,
 )
+from vision import hud
 from vision.destinations import iou
 from vision.gaze import GazeSample, pick_region
 
@@ -49,6 +51,7 @@ log = logging.getLogger("vision.object_select")
 
 WINDOW = "look at an object to choose it"
 CANVAS_W, CANVAS_H = 1280, 800  # same canvas as the calibration screen, stretched to full screen
+VIEW_H = CANVAS_H - hud.TOP_BAR_H - hud.BOTTOM_BAR_H  # height left for the camera picture between the two bars
 MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the screen wide and tall
 SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
 MIN_ACCURACY = 0.85  # calibration check must reach this before selecting objects (one retry)
@@ -184,28 +187,44 @@ def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look
     return f"{how} to confirm  |  {keys}"
 
 
+def to_view_point(point: tuple[float, float] | None) -> tuple[float, float] | None:
+    """Gaze point as a fraction of the whole screen -> fraction of the camera picture.
+
+    The camera picture no longer fills the screen: it sits between a top bar and a bottom bar. A gaze on
+    either bar is on no object, so it gives None (the same as looking away)."""
+    if point is None:
+        return None
+    y = (point[1] * CANVAS_H - hud.TOP_BAR_H) / VIEW_H
+    return (point[0], y) if 0.0 <= y <= 1.0 else None
+
+
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
-         status: str, dwell_s: float | None = DWELL_S) -> np.ndarray:
-    canvas = cv2.resize(frame, (CANVAS_W, CANVAS_H))
+         status: str, dwell_s: float | None = DWELL_S, mode: str = "Choose a destination") -> np.ndarray:
+    """The screen: camera picture with each selectable object outlined, the gaze cursor, and the status bars.
+    `point` is the gaze as a fraction of the camera picture (see to_view_point). Returns CANVAS_H x CANVAS_W."""
+    view = cv2.resize(frame, (CANVAS_W, VIEW_H))
+    sx, sy = CANVAS_W / frame.shape[1], VIEW_H / frame.shape[0]
+    objects = []
     for t in targets:
-        x1, y1, x2, y2 = (int(v * s) for v, s in zip(boxes[t.id], (CANVAS_W, CANVAS_H, CANVAS_W, CANVAS_H)))
-        color = GREEN if t.id == sel.confirmed else YELLOW if t.id == sel.candidate else RED
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 6 if color != RED else 3)
-        dist = "" if t.distance_m is None else f" ~{t.distance_m:.1f} m"
-        cv2.putText(canvas, f"{t.label}{dist}", (x1 + 6, max(24, y1 + 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        if t.id == sel.candidate and t.id != sel.confirmed:
-            if dwell_s is not None:  # dwell mode: progress bar
-                cv2.rectangle(canvas, (x1, y2 + 6), (x1 + int((x2 - x1) * dwell_fraction(sel, now, dwell_s)), y2 + 18),
-                              YELLOW, -1)
-            elif sel.since is not None and now - sel.since >= MIN_LOOK_S:  # clench mode: ready
-                cv2.putText(canvas, "CLENCH to confirm", (x1 + 6, y2 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, YELLOW, 2)
-    cx, cy = CANVAS_W // 2, CANVAS_H // 2
-    cv2.line(canvas, (cx - 15, cy), (cx + 15, cy), GREY, 2)
-    cv2.line(canvas, (cx, cy - 15), (cx, cy + 15), GREY, 2)
-    if point is not None:
-        cv2.circle(canvas, (int(point[0] * CANVAS_W), int(point[1] * CANVAS_H)), 14, CURSOR, -1)
-    cv2.putText(canvas, status, (12, CANVAS_H - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    return canvas
+        confirmed, candidate = t.id == sel.confirmed, t.id == sel.candidate
+        if confirmed:
+            progress = 1.0
+        elif candidate and dwell_s is not None:  # dwell mode: the ring fills while the rider keeps looking
+            progress = dwell_fraction(sel, now, dwell_s)
+        elif candidate:  # clench / key mode: a full ring means "looked long enough, confirm now"
+            progress = 1.0 if sel.since is not None and now - sel.since >= MIN_LOOK_S else 0.0
+        else:
+            progress = 0.0
+        x1, y1, x2, y2 = t.bbox
+        outline = None if t.outline is None else t.outline * (sx, sy)  # a new array: the track is left alone
+        objects.append(hud.SceneObject(t.label, (x1 * sx, y1 * sy, x2 * sx, y2 * sy), outline,
+                                       confirmed or candidate, progress))
+    # The "+" the rider looks at to re-centre (C key) marks the middle of the SCREEN, not of the picture.
+    cx, cy = CANVAS_W // 2, CANVAS_H // 2 - hud.TOP_BAR_H
+    cv2.line(view, (cx - 15, cy), (cx + 15, cy), GREY, 2)
+    cv2.line(view, (cx, cy - 15), (cx, cy + 15), GREY, 2)
+    cursor = None if point is None else (point[0] * CANVAS_W, point[1] * VIEW_H)
+    return hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status))
 
 
 def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None,
@@ -245,9 +264,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             log.info("re-centred: offset %.3f, %.3f", *offset)
         if key == ord("x"):
             sel = clear_destination(sel)
-        point = corrected_point(sample, offset, now)
+        point = corrected_point(sample, offset, now)  # gaze as a fraction of the whole screen
+        view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
         boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
-        hit = pick_region(point, boxes, hit) if point is not None else None
+        hit = pick_region(view_point, boxes, hit) if view_point is not None else None
         before = sel.confirmed
         sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
                                confirm=confirm_event(confirm_mode, key, jaw))
@@ -270,9 +290,11 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         total_frames += 1
         gaze_frames += point is not None
         # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
-        status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away,
-                             driver is not None) + drive_note
-        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status, dwell_s))
+        status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
+        if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
+            status = drive_note.strip(" |") + "  |  " + status
+        mode = "Drive to object" if driver is not None else "Choose a destination"
+        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, view_point, now, status, dwell_s, mode))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")
@@ -437,7 +459,11 @@ def main(argv: list[str] | None = None) -> int:
     reader = LatestFrameReader(parse_source(args.source), opener=open_capture)
     reader.start()
     process, gaze_queue, gaze_stop = start_gaze_tracker(int(args.eye_camera), args.calibration, backend)
-    model = YOLO(DEFAULT_MODEL)
+    try:
+        model = YOLO(SEG_MODEL)  # traces each object's outline; Ultralytics downloads it on first use
+    except Exception as error:  # offline and not downloaded yet: plain detector, brackets instead of outlines
+        log.warning("segmentation model unavailable (%s): corner brackets instead of outlines", str(error)[:80])
+        model = YOLO(DEFAULT_MODEL)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     jaw, driver = None, None

@@ -38,7 +38,7 @@ button.
 | C6 | Gemini's answer applies only to the view it saw. If the view changes, or the answer is older than 10 s, discard it. | `vision/scene_ai.py` `advice_valid` |
 | C7 | Gemini never commands motors and never blocks the control loop. Its failure or delay changes nothing about STOP. | `vision/scene_ai.py` (background thread only) |
 | C8 | Selection rules are unchanged: look at an object, then dwell or clench to confirm; hold-to-move stays. | `vision/object_select.py` (logic untouched) |
-| C9 | STOP is always visible and always works (click or key). | `vision/hud.py`, callers |
+| C9 | STOP is always visible and always works. Drive screen (`object_select --drive`): SPACE = latched emergency stop, R = re-arm; the on-screen button is not clickable there. Preview: click the button or press S. | `vision/hud.py`, `vision/object_select.py`, `vision/nav_preview.py` |
 | C10 | The API key stays in `.env`. Frames are downscaled, sent only when scene AI is on, never saved or logged. | `vision/scene_ai.py` |
 | C11 | The screen stays above 15 fps while Gemini works; at most one Gemini call every 3 s. | `vision/scene_ai.py`, `vision/hud.py` |
 | C12 | The screen says whether Gemini's no-go zones for this view were applied: Gemini-checked (solid route) or local estimate, unverified (dashed route). | `vision/hud.py`, `vision/nav_preview.py` |
@@ -132,6 +132,11 @@ def plan(shape, tracks, target, advice, view) -> tuple[Route | None, bool]   # r
 
 ## Known limits (Sat Nov 14)
 - The route on screen is not yet the route the chair drives. The motors follow the existing drive planner.
+- The route is only drawn by the mouse preview (`vision/nav_preview.py`). The real gaze screen
+  (`vision/object_select.py`) has the outlines, eye cursor, label, reticle and bars, but no route yet: planning
+  adds work to the loop that feeds the motors, and that needs a wheels-up timing check first.
+- The gaze screen offers at most 4 well-separated objects (a rule left from the flicker design). On the hall
+  frame it offered the three chairs and not the couches behind them.
 - Gemini misses things. In test runs it missed plants, a side table or a coffee table in some answers, so
   "Gemini-checked" does not mean every obstacle was found. The ultrasonic stop remains the backstop.
 - Gemini's answer is only valid while the view is still, so it applies while the chair is stopped.

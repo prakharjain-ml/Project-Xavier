@@ -690,3 +690,33 @@ def test_session_ends_at_once_if_the_jaw_reader_dies():
     result = run(FakeCv2(), NoFrames(), model=None, classes=None, gaze_queue=queue.Queue(), hfov=70.0,
                  device="cpu", seconds=5.0, confirm_mode="jaw", jaw=DeadJaw())
     assert result == [] and time.monotonic() - start < 1.0  # did not wait 5 s for a clench that can never come
+
+
+def test_gaze_on_the_screen_maps_onto_the_camera_picture_between_the_bars():
+    from vision.object_select import CANVAS_H, VIEW_H, to_view_point
+
+    x, y = to_view_point((0.3, 0.5))
+    assert x == 0.3 and 0.5 < y < 0.54  # the picture starts below the top bar, so its middle is a little lower
+    assert to_view_point((0.5, 0.01)) is None and to_view_point((0.5, 0.99)) is None  # on a bar: on no object
+    assert to_view_point(None) is None
+    assert VIEW_H < CANVAS_H
+
+
+def test_draw_returns_the_full_screen_with_bars_and_leaves_the_frame_and_tracks_alone():
+    import cv2
+    import numpy as np
+
+    from vision.object_select import CANVAS_H, CANVAS_W, draw
+
+    frame = np.full((1080, 1920, 3), 90, np.uint8)
+    outline = np.array([[860, 300], [1060, 300], [1060, 800], [860, 800]], np.float32)
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5, outline=outline)
+    before_frame, before_outline = frame.copy(), outline.copy()
+    looking = Selection(candidate=4, since=0.0)
+
+    screen = draw(cv2, frame, [chair], {}, looking, (0.5, 0.5), 1.0, "look for 1.5 s to confirm")
+    idle = draw(cv2, frame, [chair], {}, Selection(), None, 1.0, "look for 1.5 s to confirm")
+
+    assert screen.shape == (CANVAS_H, CANVAS_W, 3)
+    assert not np.array_equal(screen, idle)  # the looked-at object and the cursor are drawn differently
+    assert np.array_equal(frame, before_frame) and np.array_equal(outline, before_outline)

@@ -100,6 +100,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~5:31 PM - Claude Code (Fable 5.2), for Prakhar (floor-path HUD for the path preview)
+- Done: `python -m vision.nav_preview` now draws the shortest safe path on the floor: `control/astar.py` (A* on a 10 cm grid, obstacles grown by 0.45 m, string-pulled), `vision/floor.py` (floor point -> pixel from camera height + tilt), `vision/hud.py` (blue-gradient ribbon as wide as the chair with flowing arrows, stop ring, corner-bracket boxes, stats panel: target, distance/bearing, path/ETA, clearance, obstacles, speed/turn, motor command, wheel bars). Still sends nothing to any motor.
+- Evidence (command + result): `python -m pytest -q` -> `285 passed`; HUD draw time 20 ms per frame (A* 2.7 ms); live frame from the Pixel back camera rendered through the HUD.
+- Not measured yet: the phone's real height and tilt on the chair. Defaults are 1.0 m and 15 deg down; pass `--cam-height` / `--cam-pitch` once measured, otherwise the ribbon will not sit exactly on the floor.
+- Next step: measure camera height/tilt on the chair; show the same HUD in `object_select --drive`.
+
 ### Sat Nov 14, ~noon - Claude Code (Opus 5.5), for Prakhar (gaze fallback works live)
 - Done: tracker runs as its own program over localhost UDP (fixes 0-sample bug); straight-line calibration chosen by leave-one-dot-out check (error 0.138 vs 0.232 for the 28-term map) -> calibration accuracy 97%; on-screen gaze cursor + C-key re-centring; bigger arrow regions, enter 2% inside / leave 8% outside.
 - Evidence (command + result): `python app.py --gaze --mock --seconds 120` (Prakhar, live): all 4 directions reached MOVING (FWD 3, BACK 4, LEFT 2, RIGHT 2 of 23 selections). Before fixes: only BACK. `python -m pytest -q` -> 202 passed.

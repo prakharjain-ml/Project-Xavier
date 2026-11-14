@@ -10,6 +10,7 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
   - Gate 0: [x] Prakhar (toolchain + rules + OpenBCI GUI + YOLO cache + ffmpeg verified) [ ] Keshav [ ] Pratosh [ ] Vani
 - Decisions: D1 to D8 are locked in section 6 of the plan. Record any change here with time, reason and who agreed.
   - Fri Nov 13, 2:45 pm (pre-kickoff spec reconciliation, Prakhar): Set Phase 1 kickoff constants in `docs/INTERFACES.md` (`CONF_THRESHOLD=0.15`, `MAX_SPEED=150`, `TURN_SPEED=120`, `OBSTACLE_STOP_CM=50`, `ALPHA_BAND_HZ=(8,13)`), made ultrasonic forward-obstacle stop non-latching (`STOPPED` when `(left + right) > 0` and `0 < distance_cm < OBSTACLE_STOP_CM`, `-1` on echo timeout) so in-place turns are never deadlocked, and aligned `docs/` + `.cursor/rules/` ahead of the 8:00 pm initial commit.
+  - Sat Nov 14, ~3:00 am (Prakhar, via Claude Code; CONFIRM at 11 am sync): added `GoalHint` (vision -> control, Mode 2) and the JSON-over-UDP transport rule (`"v"` + `"type"`, invalid messages dropped) to `docs/INTERFACES.md`; `shared/protocol.py` updated with a doc-parity test. Reason: vision must never send wheel speeds, so a hoverboard or firmware change only touches `motors/` and `firmware/`.
 - Open questions: section 12 of the plan (venue permission, exact hardware). Paste each answer here when it arrives.
 - Blockers: none yet
 

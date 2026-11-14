@@ -103,3 +103,11 @@ def test_messages_are_immutable():
 
 def test_target_enum_has_none():
     assert Target.NONE.value == "NONE"
+
+
+def test_goalhint_fields_match_interfaces_doc():
+    import dataclasses
+
+    section = DOC.read_text().split("### GoalHint", 1)[1].split("\n### ", 1)[0]
+    doc_fields = re.findall(r"^\| `(\w+)` \|", section, flags=re.MULTILINE)
+    assert doc_fields == [f.name for f in dataclasses.fields(protocol.GoalHint)]

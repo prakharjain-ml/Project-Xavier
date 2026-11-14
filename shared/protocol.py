@@ -143,3 +143,13 @@ class TargetSet:
 
     targets: tuple[TargetInfo, ...]
     t: float
+
+
+@dataclass(frozen=True)
+class GoalHint:
+    """vision -> control (Mode 2). Where the chosen target is; control alone turns this into wheel speeds."""
+
+    target_id: int  # negative = Gemini-only target (e.g. a door)
+    offset: float  # -1 far left, 0 straight ahead, +1 far right
+    distance_m: float | None  # box-size estimate, never a safety signal
+    t: float

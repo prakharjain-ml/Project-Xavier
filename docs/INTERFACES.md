@@ -59,6 +59,22 @@ If the firmware takes speed/steer instead of left/right: speed = (left + right) 
 ### TargetSet (vision -> interface, control; Mode 2)
 List of up to 4: `id` (int, stable track id), `label` (str), `bbox` (x1, y1, x2, y2 px), `freq_hz` (assigned).
 
+### GoalHint (vision -> control; Mode 2) - added Sat Nov 14 ~3 am, confirm at 11 am sync
+Where the chosen target is, so control can steer. Vision never sends wheel speeds; only `control/` turns this
+into a `MotorCommand` (using `MAX_SPEED` / `TURN_SPEED`) and only while the state machine allows motion.
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `target_id` | int | track id from the TargetSet (negative = Gemini-only target such as a door) |
+| `offset` | float -1..1 | horizontal position of the target: -1 far left, 0 straight ahead, +1 far right |
+| `distance_m` | float or None | estimate from box size (not LiDAR, not a safety signal); None if unknown |
+| `t` | float | monotonic time of the camera frame |
+Rules: target lost or GoalHint older than `STALE_INTENT_S` -> control treats it as NONE -> STOP.
+
+### Transport between processes (Mode 2, decision D3)
+Vision runs as its own process and sends JSON over localhost UDP. Every message carries `"v": PROTOCOL_VERSION`
+and `"type": "TargetSet" | "GoalHint"`. A message with a wrong version, unknown type or missing field is dropped
+and logged; it is never partially used.
+
 ## Laptop to ESP32 bridge (USB serial, 115200 baud, newline-terminated ASCII)
 Laptop to bridge, sent every 50 ms by `motors/driver.py`, even when stopped:
 - `C,<seq>,<left>,<right>\n`: wheel speeds in firmware units, already clamped; `seq` counts up from 0

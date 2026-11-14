@@ -5,9 +5,25 @@
 > the chair drives to a chosen object by the 1 am freeze].
 
 ## Name and tagline
-**Project Xavier: steer a wheelchair with your eyes and a clench of your jaw.**
-A low-cost, hands-free wheelchair for people who cannot use a joystick, built on a hoverboard, a webcam and a
-hobby EEG headset, with safety layers that default to stopping.
+**Project Xavier**
+**Tagline:** Closing the loop between human intent and autonomous motion.
+**Elevator pitch:** Hands-free mobility powered by biosignals, computer vision, and real-time path planning.
+(Only if SSVEP brain-signal control works on the rider by the freeze: "An automated wheelchair controlled via EEG
+signals and real-time path planning." Until then, the control is gaze + an EEG-headset jaw clench, so say that.)
+
+## Why "Xavier"
+Charles Xavier, the professor from X-Men, might be the most famous wheelchair user in fiction. He runs a school,
+leads a team and gets around without ever touching a joystick. He has Cerebro, a helmet that amplifies his brain
+waves, and in the 90s animated series he floats around in a hover chair.
+
+We had a hoverboard, a hobby EEG headset and a weekend. The joke wrote itself, and then it stopped being a joke.
+Our "Cerebro" is an OpenBCI board with gel electrodes. Our hover chair is a split hoverboard we re-flashed by hand.
+And the idea is the same one the comics had decades ago: mobility should follow intent, not hands.
+
+There is one honest difference. Xavier reads minds. We read signals: where the rider's eyes go, a deliberate
+clench of the jaw picked up by the EEG headset, and, next, the visual cortex responding to flickering targets.
+It is a smaller superpower, but it is a real one, and it runs on parts that cost a fraction of a clinical system.
+(Project Xavier is a fan reference; we are not affiliated with Marvel.)
 
 ## Inspiration
 People with ALS, high spinal cord injury or severe cerebral palsy often lose the hand control a joystick wheelchair

@@ -225,7 +225,9 @@ def test_start_gaze_process_receives_udp_samples_and_drops_garbage(monkeypatch):
         def wait(self, timeout=None):
             return 0
 
-    monkeypatch.setattr(app.subprocess, "Popen", FakePopen)
+    import vision.gaze_link as gaze_link
+
+    monkeypatch.setattr(gaze_link.subprocess, "Popen", FakePopen)
     process, q, stop = app.start_gaze_process(0, "cal.json")
     try:
         cmd = launched["cmd"]

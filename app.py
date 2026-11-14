@@ -21,7 +21,6 @@ import argparse
 import logging
 import os
 import queue
-import socket
 import subprocess
 import sys
 import threading
@@ -44,7 +43,8 @@ from shared.protocol import (
     StopSource,
     Target,
 )
-from vision.gaze import ARROW_REGIONS, decode_gaze_message, pick_region  # numpy only: no cv2 here
+from vision.gaze import ARROW_REGIONS, pick_region  # numpy only: no cv2 here
+from vision.gaze_link import start_gaze_tracker  # no cv2 / pygame inside
 from vision.gaze_tracker import CALIBRATION_PATH  # module top imports no cv2/mediapipe
 
 log = logging.getLogger("app")
@@ -149,35 +149,8 @@ class GazeIntentSource:
 
 
 def start_gaze_process(eye_camera: int, calibration: str):
-    """Start the eye tracker as its own program and receive its samples over localhost UDP.
-
-    Returns (process, queue of GazeSample, stop event). A separate program (not multiprocessing): a spawned
-    child would re-import this file, i.e. pygame, next to cv2 -> SDL2 clash (it sent 0 samples that way).
-    """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 0))  # any free port; the tracker is told which one
-    sock.settimeout(0.2)
-    port = sock.getsockname()[1]
-    process = subprocess.Popen([sys.executable, "-m", "vision.gaze_tracker", "--eye-camera", str(eye_camera),
-                                "--calibration", calibration, "--port", str(port)],
-                               cwd=os.path.dirname(os.path.abspath(__file__)))
-    gaze_queue, stop = queue.Queue(maxsize=1), threading.Event()
-
-    def receive() -> None:
-        while not stop.is_set():
-            try:
-                raw = sock.recv(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            sample = decode_gaze_message(raw, time.monotonic())
-            if sample is not None:  # invalid messages are dropped whole (INTERFACES.md transport rule)
-                offer_latest(gaze_queue, sample)
-        sock.close()
-
-    threading.Thread(target=receive, name="gaze-receiver", daemon=True).start()
-    return process, gaze_queue, stop
+    """Start the eye tracker program; see vision/gaze_link.py. Kept here so callers and tests use one name."""
+    return start_gaze_tracker(eye_camera, calibration)
 
 
 def control_tick(source: KeyboardIntentSource, driver, state: ControllerState,

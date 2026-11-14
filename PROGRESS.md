@@ -70,6 +70,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~10:30 am - Claude Code (Opus 5.5), for Prakhar (gaze fallback, branch prakhar/gaze)
+- Done: MediaPipe 1.2.3 installed with --no-deps (OpenCV untouched); face model in ~/hp26-models/face_landmarker/. `vision/gaze.py` (features, 9-point calibration fit, hysteresis, blink filter, gaze_step), `vision/gaze_tracker.py` (13 FPS on built-in camera), `vision/gaze_calibrate.py` (9 dots + 4-region accuracy), `app.py --gaze` (static arrows; same state machine + driver).
+- Known bug: `app.py --gaze` launches the tracker with multiprocessing spawn, which re-imports app.py (pygame) in the child -> SDL clash -> 0 samples. Proven: launched from a pygame-free script it sends 77 samples / 8 s, face 76/77. Fix next: run tracker as its own program sending JSON over localhost UDP (INTERFACES.md transport rule).
+- Evidence (command + result): `python -m pytest -q` -> all pass; mutation checks (blink limit 0 and 1 s, no hysteresis, stale gaze accepted) each fail a test.
+
 ### Sat Nov 14, ~2:00 am - Claude Code (Opus 5.5), for Prakhar
 - Done: frequency assignment logic in `vision/detect_track.py`: `separate_targets` keeps only boxes with >= `MIN_GAP_FRAC` (5% of width) empty space from better-ranked boxes (overlap = rejected, next-best fills the slot); `assign_frequencies` keeps existing frequencies, gives a new box the free frequency furthest from its nearest neighbour's.
 - Next step: render the actual flicker patches (interface/, pygame, separate process); tune MIN_GAP_FRAC in calibration.

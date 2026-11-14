@@ -125,3 +125,82 @@ def test_end_to_end_held_forward_reaches_the_port_as_drive_lines_after_dwell(mon
     assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")  # forward at the speed cap
     assert first_drive >= 25  # ~1.5 s of STOP lines at 20 Hz first: the dwell was respected
     assert all(line.startswith("S,") for line in lines[-5:])  # app exit sends explicit STOP
+
+
+# ---------------------------------------------------------------- gaze mode
+import queue as _queue  # noqa: E402
+import threading as _threading  # noqa: E402
+import time as _time  # noqa: E402
+
+from vision.gaze import GazeSample  # noqa: E402
+
+
+def _gaze_source_with(*samples):
+    from app import GazeIntentSource
+
+    q = _queue.Queue()
+    for s in samples:
+        q.put(s)
+    return GazeIntentSource(q)
+
+
+@pytest.mark.parametrize("point, expected", [
+    ((0.5, 0.1), Target.FWD), ((0.1, 0.5), Target.LEFT), ((0.9, 0.5), Target.RIGHT), ((0.5, 0.9), Target.BACK),
+    ((0.5, 0.5), Target.NONE),  # resting in the centre selects nothing
+])
+def test_gaze_regions_map_to_targets(point, expected):
+    source = _gaze_source_with(GazeSample(point, False, True, 10.0))
+    assert source.snapshot(10.05).intent.target == expected
+
+
+def test_stale_or_missing_gaze_is_none():
+    assert _gaze_source_with(GazeSample((0.5, 0.1), False, True, 10.0)).snapshot(11.0).intent.target == Target.NONE
+    assert _gaze_source_with(GazeSample(None, True, True, 10.0)).snapshot(10.05).intent.target == Target.NONE
+    assert _gaze_source_with().snapshot(10.0).intent.target == Target.NONE
+
+
+def test_gaze_mode_space_is_estop_and_arrow_keys_do_nothing():
+    source = _gaze_source_with()
+    source.on_event(key(pygame.KEYDOWN, pygame.K_UP))  # keyboard must not drive in gaze mode
+    assert source.snapshot(1.0).intent.target == Target.NONE
+    source.on_event(key(pygame.KEYDOWN, pygame.K_SPACE))
+    assert source.snapshot(1.1).stop_requests
+
+
+def test_gaze_mode_refuses_to_start_without_calibration(tmp_path):
+    assert main(["--gaze", "--mock", "--calibration", str(tmp_path / "missing.json"), "--seconds", "0.2"]) == 2
+
+
+def test_end_to_end_gaze_on_forward_arrow_drives_after_dwell(monkeypatch, tmp_path):
+    """Full app with a fake gaze process that keeps reporting the top (FORWARD) region."""
+    import app
+    from motors.mock_serial import MockSerial
+
+    ports, stop_fake = [], _threading.Event()
+
+    class RecordingMock(MockSerial):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            ports.append(self)
+
+    def fake_gaze_process(_camera, _calibration):
+        q = _queue.Queue(maxsize=1)
+
+        def feed():
+            while not stop_fake.is_set():
+                app.offer_latest(q, GazeSample((0.5, 0.1), False, True, _time.monotonic()))
+                stop_fake.wait(0.05)
+
+        _threading.Thread(target=feed, daemon=True).start()
+        return None, q, stop_fake
+
+    calibration = tmp_path / "cal.json"
+    calibration.write_text("{}")
+    monkeypatch.setattr(app, "MockSerial", RecordingMock)
+    monkeypatch.setattr(app, "start_gaze_process", fake_gaze_process)
+    assert main(["--gaze", "--mock", "--windowed", "--seconds", "3", "--calibration", str(calibration)],
+                start_events=["space"]) == 0
+    lines = ports[0].lines()
+    first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
+    assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")
+    assert first_drive >= 25  # the 1.5 s dwell still applies to gaze

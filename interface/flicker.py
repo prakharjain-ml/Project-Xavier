@@ -131,12 +131,13 @@ def arrow_centers(width: int, height: int) -> dict[Target, tuple[int, int]]:
     }
 
 
-def draw_arrows(screen: pygame.Surface, frame_index: int, schedule: dict[Target, int], status: ControlStatus) -> None:
+def draw_arrows(screen: pygame.Surface, frame_index: int, schedule: dict[Target, int], status: ControlStatus,
+                static: bool = False) -> None:
     width, height = screen.get_size()
     size = int(min(width, height) * ARROW_FRACTION)
     for target, center in arrow_centers(width, height).items():
         points = arrow_points(target, center, size)
-        if is_on(frame_index, schedule[target]):
+        if static or is_on(frame_index, schedule[target]):  # static: gaze mode needs no flicker
             pygame.draw.polygon(screen, WHITE, points)
         pygame.draw.polygon(screen, OUTLINE, points, width=3)  # static outline: rider can find dark arrows
         if target == status.held_target and status.state in (State.DWELLING, State.MOVING):
@@ -177,7 +178,7 @@ def wait_until(deadline: float) -> float:
 
 def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames: int | None, has_vsync: bool,
                 deadline: float | None, status_queue: queue.Queue | None,
-                key_sink: Callable[[pygame.event.Event], None] | None = None) -> FrameStats:
+                key_sink: Callable[[pygame.event.Event], None] | None = None, static: bool = False) -> FrameStats:
     """The 60 Hz loop. One iteration = one display refresh; frame_index drives every flicker."""
     schedule = flicker_schedule()
     font = pygame.font.Font(None, 28)
@@ -195,7 +196,7 @@ def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames:
         status = read_latest(status_queue, status)
         screen.fill(BLACK)
         if single_frames is None:
-            draw_arrows(screen, frame_index, schedule, status)
+            draw_arrows(screen, frame_index, schedule, status, static)
         else:
             draw_single(screen, frame_index, single_frames)
         if show_stats:

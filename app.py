@@ -1,8 +1,10 @@
 """The whole chain in one process (decision D3): flicker screen -> safety state machine -> motor driver -> ESP32.
 
-Today the KEYBOARD stands in for the EEG decoder, so we can prove the wiring before the signal works:
+Intent sources (the EEG decoder will be a third one, sending the same Intent message):
+--keyboard: the KEYBOARD stands in for the decoder, so we can prove the wiring before the signal works:
   hold an arrow key = "the rider is looking at that arrow" (Intent with full confidence)
   no arrow, or two at once = NONE           SPACE = operator E-STOP           R = operator re-arm
+--gaze: webcam eye tracking (vision/gaze*.py) picks the arrow you look at; arrows are drawn static.
 Every real safety rule still applies: 1.5 s dwell before motion, stop on release, E-STOP latch, 20 Hz STOP
 stream, ESP32 watchdog. Later the decoder replaces KeyboardIntentSource and sends the same Intent message.
 
@@ -17,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
+import os
 import queue
 import sys
 import threading
@@ -29,7 +33,18 @@ from interface.flicker import KEYS, offer_latest, open_display, run_flicker, sho
 from interface.timing import FrameStats
 from motors.driver import MotorDriver, open_serial
 from motors.mock_serial import MockSerial
-from shared.protocol import CONTROL_HZ, ControlStatus, Intent, State, StopRequest, StopSource, Target
+from shared.protocol import (
+    CONTROL_HZ,
+    STALE_INTENT_S,
+    ControlStatus,
+    Intent,
+    State,
+    StopRequest,
+    StopSource,
+    Target,
+)
+from vision.gaze import ARROW_REGIONS, pick_region  # numpy only: no cv2 in this (pygame) process
+from vision.gaze_tracker import CALIBRATION_PATH  # module top imports no cv2/mediapipe
 
 log = logging.getLogger("app")
 
@@ -73,6 +88,60 @@ class KeyboardIntentSource:
         return ControlInputs(intent=intent, stop_requests=stops, rearm=rearm)
 
 
+class GazeIntentSource:
+    """Gaze samples from the tracker process -> Intents. The keyboard only gives operator keys (SPACE, R).
+
+    Looking at the top/left/right/bottom arrow region = that target. No face, eyes closed longer than a blink,
+    gaze in the centre or between regions, or a sample older than STALE_INTENT_S = NONE, so the chair stops.
+    """
+
+    def __init__(self, gaze_queue) -> None:
+        self._queue = gaze_queue
+        self._lock = threading.Lock()
+        self._sample = None  # newest GazeSample (only touched by the control thread)
+        self._region: str | None = None  # current region, kept for hysteresis
+        self._stop_pressed = False
+        self._rearm_pressed = False
+
+    def on_event(self, event: pygame.event.Event) -> None:
+        with self._lock:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                self._stop_pressed = True
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                self._rearm_pressed = True
+
+    def _newest_sample(self):
+        while True:  # drain: only the newest sample matters
+            try:
+                self._sample = self._queue.get_nowait()
+            except queue.Empty:
+                return self._sample
+
+    def snapshot(self, now: float) -> ControlInputs:
+        sample = self._newest_sample()
+        with self._lock:
+            stop, rearm = self._stop_pressed, self._rearm_pressed
+            self._stop_pressed = self._rearm_pressed = False
+        fresh = sample is not None and sample.point is not None and now - sample.t <= STALE_INTENT_S
+        self._region = pick_region(sample.point, ARROW_REGIONS, self._region) if fresh else None
+        target = Target(self._region) if self._region else Target.NONE
+        intent = Intent(target=target, confidence=1.0 if target != Target.NONE else 0.0, t=now)
+        stops = (StopRequest(StopSource.OPERATOR, now),) if stop else ()
+        return ControlInputs(intent=intent, stop_requests=stops, rearm=rearm)
+
+
+def start_gaze_process(eye_camera: int, calibration: str):
+    """Start the eye tracker in its own process (cv2 + mediapipe must not share the pygame process)."""
+    from vision.gaze_tracker import run_gaze_process
+
+    ctx = multiprocessing.get_context("spawn")
+    gaze_queue, stop = ctx.Queue(maxsize=1), ctx.Event()
+    process = ctx.Process(target=run_gaze_process, args=(gaze_queue, eye_camera, calibration, stop),
+                          name="gaze", daemon=True)
+    process.start()
+    return process, gaze_queue, stop
+
+
 def control_tick(source: KeyboardIntentSource, driver, state: ControllerState,
                  now: float) -> tuple[ControllerState, ControlStatus]:
     """One 20 Hz tick: inputs -> state machine -> driver. Returns the new state and the status for the screen."""
@@ -99,7 +168,11 @@ def control_loop(source, driver, status_queue: queue.Queue, stop: threading.Even
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="SSVEP chair: screen -> control -> motors")
-    parser.add_argument("--keyboard", action="store_true", help="arrow keys stand in for the EEG decoder")
+    intent = parser.add_mutually_exclusive_group(required=True)
+    intent.add_argument("--keyboard", action="store_true", help="arrow keys stand in for the EEG decoder")
+    intent.add_argument("--gaze", action="store_true", help="webcam eye tracking chooses the arrow")
+    parser.add_argument("--eye-camera", type=int, default=0, help="camera that sees the rider's face (--gaze)")
+    parser.add_argument("--calibration", default=CALIBRATION_PATH, help="gaze calibration file (--gaze)")
     port = parser.add_mutually_exclusive_group(required=True)
     port.add_argument("--mock", action="store_true", help="fake serial port (no hardware)")
     port.add_argument("--serial", metavar="PORT", help="ESP32 bridge port, e.g. /dev/cu.usbserial-0001 (HUMANS ONLY)")
@@ -111,17 +184,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None, start_events: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    if not args.keyboard:
-        log.error("the EEG decoder is not built yet: run with --keyboard")
-        return 2
     if args.serial and looks_like_openbci_dongle(args.serial):
         log.error("%s looks like the OpenBCI dongle, not the ESP32. Refusing to send motor commands to it.",
                   args.serial)
         return 2
+    if args.gaze and not os.path.exists(args.calibration):
+        log.error("no gaze calibration at %s: run `python -m vision.gaze_calibrate` first", args.calibration)
+        return 2
     mock = MockSerial() if args.mock else None
     driver = MotorDriver((lambda: mock) if mock else (lambda: open_serial(args.serial)))
     driver.start()  # streams STOP lines from now on, so the ESP32 never sees silence
-    source, status_queue = KeyboardIntentSource(), queue.Queue(maxsize=1)
+    gaze_process = gaze_stop = None
+    if args.gaze:  # start early: the camera and face model take a moment to warm up
+        gaze_process, gaze_queue, gaze_stop = start_gaze_process(args.eye_camera, args.calibration)
+        source = GazeIntentSource(gaze_queue)
+    else:
+        source = KeyboardIntentSource()
+    status_queue = queue.Queue(maxsize=1)
     stop, result, stats = threading.Event(), {"state": State.STOPPED}, FrameStats()
     pygame.init()
     try:
@@ -134,10 +213,17 @@ def main(argv: list[str] | None = None, start_events: list[str] | None = None) -
         if show_warning(screen, clock, deadline):
             threading.Thread(target=control_loop, args=(source, driver, status_queue, stop, result),
                              name="control", daemon=True).start()
-            stats = run_flicker(screen, clock, None, has_vsync, deadline, status_queue, key_sink=source.on_event)
+            stats = run_flicker(screen, clock, None, has_vsync, deadline, status_queue, key_sink=source.on_event,
+                                static=args.gaze)  # gaze mode: arrows do not flicker
     finally:
         stop.set()
         driver.stop()  # final explicit STOP lines, then close the port
+        if gaze_stop is not None:
+            gaze_stop.set()
+        if gaze_process is not None:
+            gaze_process.join(timeout=3)
+            if gaze_process.is_alive():
+                gaze_process.terminate()
         pygame.quit()
     print(f"summary: frames={stats.frames} bridge_lines={driver.status().lines_sent} "
           f"final_state={result['state'].value}")

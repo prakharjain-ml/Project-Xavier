@@ -94,3 +94,26 @@ def test_gaze_problem_names_the_reason():
     assert gaze_problem(GazeSample(None, False, False, 1.0), now=1.0) == "no_face"
     assert gaze_problem(GazeSample(None, True, True, 1.0), now=1.0) == "eyes_closed"
     assert gaze_problem(GazeSample((0.5, 0.5), False, True, 1.0), now=1.0) is None
+
+
+def test_session_ends_at_once_if_the_eye_tracker_dies():
+    import queue
+    import time
+
+    from vision.object_select import run
+
+    class FakeCv2:
+        def waitKey(self, _ms):  # noqa: N802 - OpenCV's name
+            return 255
+
+        def imshow(self, *_args):
+            pass
+
+    class NoFrames:
+        def latest(self):
+            return None
+
+    start = time.monotonic()
+    result = run(FakeCv2(), NoFrames(), model=None, classes=None, gaze_queue=queue.Queue(), hfov=70.0,
+                 device="cpu", seconds=5.0, tracker_alive=lambda: False)
+    assert result == [] and time.monotonic() - start < 1.0  # did not sit there for the full 5 s

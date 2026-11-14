@@ -141,7 +141,8 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
     return canvas
 
 
-def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None) -> list[str]:
+def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None,
+        tracker_alive=lambda: True) -> list[str]:
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
     targets: list[Track] = []
@@ -152,6 +153,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     while seconds is None or time.monotonic() - start < seconds:
         key = cv2.waitKey(1) & 0xFF
         if key in (27, ord("q")):
+            break
+        if not tracker_alive():  # a live test once ran 4 minutes with a dead tracker: stop and say so
+            log.error("eye tracker stopped (see its error above): no gaze possible, ending the session")
             break
         now = time.monotonic()
         snapshot = reader.latest()
@@ -195,8 +199,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Choose a real object by looking at it.")
-    parser.add_argument("--source", default="1", help="forward camera (Pixel / Logitech) index or URL")
-    parser.add_argument("--eye-camera", type=int, default=0, help="camera that sees the rider's face")
+    parser.add_argument("--source", default="auto", help="forward camera index/URL, or auto (= not the face camera)")
+    parser.add_argument("--eye-camera", default="auto", help="camera that sees the rider's face, or auto")
     parser.add_argument("--calibration", default="data/raw/gaze_calibration.json")
     parser.add_argument("--hfov", type=float, default=70.0)
     parser.add_argument("--device", default="mps")
@@ -211,15 +215,28 @@ def main(argv: list[str] | None = None) -> int:
     from vision.camera_source import LatestFrameReader, open_capture, parse_source
     from vision.gaze_link import start_gaze_tracker
 
+    if "auto" in (args.source, args.eye_camera):
+        from vision.camera_roles import assign_roles, probe_cameras
+
+        probes = probe_cameras()
+        log.info("cameras: %s", ", ".join(f"{p.index}{' (face)' if p.sees_face else ''}" for p in probes))
+        try:
+            eye, forward = assign_roles(probes)
+        except RuntimeError as error:
+            log.error("%s", error)
+            return 2
+        args.eye_camera = eye if args.eye_camera == "auto" else int(args.eye_camera)
+        args.source = str(forward) if args.source == "auto" else args.source
+        log.info("eye camera = %s, forward camera = %s", args.eye_camera, args.source)
     reader = LatestFrameReader(parse_source(args.source), opener=open_capture)
     reader.start()
-    process, gaze_queue, gaze_stop = start_gaze_tracker(args.eye_camera, args.calibration)
+    process, gaze_queue, gaze_stop = start_gaze_tracker(int(args.eye_camera), args.calibration)
     model = YOLO(DEFAULT_MODEL)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     try:
         confirmations = run(cv2, reader, model, relevant_class_ids(model.names), gaze_queue, args.hfov, args.device,
-                            args.seconds)
+                            args.seconds, tracker_alive=lambda: process.poll() is None)
     finally:
         gaze_stop.set()
         process.terminate()

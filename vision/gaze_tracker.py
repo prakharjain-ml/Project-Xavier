@@ -124,11 +124,22 @@ def main(argv: list[str] | None = None) -> int:
     from vision.gaze import encode_gaze_message
 
     parser = argparse.ArgumentParser(description="Eye tracker: sends gaze samples over localhost UDP.")
-    parser.add_argument("--eye-camera", type=int, default=0)
+    parser.add_argument("--eye-camera", default="auto", help="camera index, or auto = the camera that sees a face")
     parser.add_argument("--calibration", default=CALIBRATION_PATH)
     parser.add_argument("--port", type=int, required=True)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.eye_camera == "auto":
+        from vision.camera_roles import probe_cameras
+
+        faces = [p.index for p in probe_cameras() if p.sees_face]
+        if not faces:
+            log.error("no camera sees a face: sit in front of the laptop camera")
+            return 2
+        eye_camera = faces[0]
+        log.info("eye camera (auto) = %d", eye_camera)
+    else:
+        eye_camera = int(args.eye_camera)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     parent = os.getppid()
 
@@ -138,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass  # nobody listening right now: drop it (the app treats gaps as stale -> STOP)
 
-    run_gaze_process(emit, args.eye_camera, args.calibration, should_stop=lambda: os.getppid() != parent)
+    run_gaze_process(emit, eye_camera, args.calibration, should_stop=lambda: os.getppid() != parent)
     return 0
 
 

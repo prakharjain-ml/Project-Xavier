@@ -182,7 +182,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     intent = parser.add_mutually_exclusive_group(required=True)
     intent.add_argument("--keyboard", action="store_true", help="arrow keys stand in for the EEG decoder")
     intent.add_argument("--gaze", action="store_true", help="webcam eye tracking chooses the arrow")
-    parser.add_argument("--eye-camera", type=int, default=0, help="camera that sees the rider's face (--gaze)")
+    parser.add_argument("--eye-camera", default="auto", help="camera that sees the rider's face, or auto (--gaze)")
     parser.add_argument("--calibration", default=CALIBRATION_PATH, help="gaze calibration file (--gaze)")
     port = parser.add_mutually_exclusive_group(required=True)
     port.add_argument("--mock", action="store_true", help="fake serial port (no hardware)")

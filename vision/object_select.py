@@ -31,6 +31,7 @@ from vision.detect_track import (
     Track,
     detect,
     focal_length_px,
+    load_hfov,
     pick_targets,
     relevant_class_ids,
     separate_targets,
@@ -202,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", default="auto", help="forward camera index/URL, or auto (= not the face camera)")
     parser.add_argument("--eye-camera", default="auto", help="camera that sees the rider's face, or auto")
     parser.add_argument("--calibration", default="data/raw/gaze_calibration.json")
-    parser.add_argument("--hfov", type=float, default=70.0)
+    parser.add_argument("--hfov", type=float, default=load_hfov(), help="calibrated if data/raw/camera_calibration.json exists")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seconds", type=float, default=None)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)

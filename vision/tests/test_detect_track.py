@@ -91,3 +91,16 @@ def test_new_box_gets_frequency_furthest_from_its_nearest_neighbor():
     result = assign_frequencies([1, 2], previous, centers)
     assert result[1] == TARGET_FREQS_HZ[0]
     assert result[2] == TARGET_FREQS_HZ[3]  # 15 Hz: as different from 6.67 Hz as possible
+
+
+def test_load_hfov_reads_saved_calibration_or_falls_back(tmp_path):
+    import json
+
+    from vision.detect_track import DEFAULT_HFOV_DEG, load_hfov
+
+    assert load_hfov(tmp_path / "missing.json") == DEFAULT_HFOV_DEG
+    path = tmp_path / "cal.json"
+    path.write_text(json.dumps({"hfov_deg": 85.5}))
+    assert load_hfov(path) == 85.5
+    path.write_text("not json")
+    assert load_hfov(path) == DEFAULT_HFOV_DEG  # a broken file never crashes the app

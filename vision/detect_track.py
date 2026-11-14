@@ -15,6 +15,7 @@ Run from the repo root:  python -m vision.detect_track --source 1     (q or ESC 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import os
@@ -37,6 +38,7 @@ TARGET_FREQS_HZ = tuple(PROTOCOL_FREQS_HZ.values())
 MAX_TARGETS = 4
 DEFAULT_MODEL = os.path.expanduser(os.environ.get("YOLO_MODEL", "~/hp26-models/yolo11n.pt"))
 DEFAULT_HFOV_DEG = 70.0  # horizontal field of view guess for a phone/webcam; calibrate with --hfov
+CAMERA_CALIBRATION_PATH = "data/raw/camera_calibration.json"  # gitignored; written by the distance calibration
 MIN_CONF = 0.4  # only SHOW objects YOLO is at least this sure about
 TRACK_CONF = 0.1  # but give the tracker everything above this: weak detections keep an object's ID alive
 TRACKER_CONFIG = str(Path(__file__).with_name("bytetrack_chair.yaml"))
@@ -76,6 +78,15 @@ class Track:
     conf: float
     bbox: tuple[float, float, float, float]  # x1, y1, x2, y2 in pixels
     distance_m: float | None
+
+
+def load_hfov(path: str | Path = CAMERA_CALIBRATION_PATH) -> float:
+    """Calibrated horizontal field of view, else the default guess. Pixel, measured Sat Nov 14: 85.5 deg (the 70 deg
+    guess made every distance ~40% too far)."""
+    try:
+        return float(json.loads(Path(path).read_text())["hfov_deg"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return DEFAULT_HFOV_DEG
 
 
 def focal_length_px(frame_width: int, hfov_deg: float) -> float:
@@ -274,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="YOLO + ByteTrack targets with frequencies and distance.")
     parser.add_argument("--source", default=os.environ.get("CAMERA_SOURCE", "1"), help="camera index, URL or file")
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--hfov", type=float, default=DEFAULT_HFOV_DEG, help="camera horizontal field of view, deg")
+    parser.add_argument("--hfov", type=float, default=load_hfov(), help="camera horizontal field of view, deg")
     parser.add_argument("--device", default="mps", help="mps (Apple GPU) or cpu")
     parser.add_argument("--seconds", type=float, default=None)
     parser.add_argument("--all-classes", action="store_true", help="show every COCO object, not just relevant ones")

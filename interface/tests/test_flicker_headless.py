@@ -29,7 +29,8 @@ def test_flicker_runs_after_space(capsys):
 
 
 def test_single_target_mode_runs(capsys):
-    assert main(["--windowed", "--single", "12", "--seconds", "0.4"], start_events=["space"]) == 0
+    # 1 s, not 0.4 s: under heavy CPU load (full suite) start-up alone ate most of 0.4 s and the test flaked.
+    assert main(["--windowed", "--single", "12", "--seconds", "1.0"], start_events=["space"]) == 0
     assert frames_of(capsys) > 5
 
 

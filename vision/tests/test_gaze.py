@@ -180,3 +180,34 @@ def test_invalid_gaze_messages_are_dropped(raw):
     from vision.gaze import decode_gaze_message
 
     assert decode_gaze_message(raw, now=1.0) is None
+
+
+def _noisy_grid_samples(per_point=20, noise=0.0008, seed=1):
+    rng = np.random.default_rng(seed)
+    samples = []
+    for tx, ty in [(x, y) for x in (0.1, 0.5, 0.9) for y in (0.1, 0.5, 0.9)]:
+        for _ in range(per_point):
+            shift = ((tx - 0.5) * 0.02 + rng.normal(0, noise), (ty - 0.5) * 0.01 + rng.normal(0, noise))
+            samples.append((eye_features(face(iris_shift=shift, nose_shift=tuple(rng.normal(0, 0.002, 2)))), (tx, ty)))
+    return samples
+
+
+def test_linear_fit_generalises_to_unseen_points():
+    cal = fit_calibration(_noisy_grid_samples(), open_ratio=0.25, degree=1)
+    assert cal.degree == 1 and len(cal.weights) == 7  # 1 + 6 features
+    x, y = predict(cal, eye_features(face(iris_shift=((0.3 - 0.5) * 0.02, (0.7 - 0.5) * 0.01))))
+    assert x == pytest.approx(0.3, abs=0.08) and y == pytest.approx(0.7, abs=0.08)
+
+
+def test_cross_validation_reports_both_models_and_prefers_linear_on_noisy_9_points():
+    from vision.gaze import cross_validate
+
+    errors = cross_validate(_noisy_grid_samples(), open_ratio=0.25)
+    assert set(errors) == {1, 2} and all(np.isfinite(e) for e in errors.values())
+    assert errors[1] <= errors[2]  # with only 9 targets the 28-term model overfits
+
+
+def test_calibration_round_trip_keeps_degree(tmp_path):
+    cal = fit_calibration(_noisy_grid_samples(per_point=5), open_ratio=0.25, degree=1)
+    save_calibration(cal, tmp_path / "c.json")
+    assert load_calibration(tmp_path / "c.json") == cal

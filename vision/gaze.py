@@ -24,7 +24,7 @@ BLINK_MAX_S = 0.4  # a normal blink is 0.1-0.3 s; closures shorter than this kee
 CLOSED_FRACTION = 0.5  # eyes count as closed when openness drops below half of the rider's calibrated openness
 SMOOTH_ALPHA = 0.3  # how much of each new gaze point to take (lower = steadier but laggier)
 REGION_MARGIN = 0.03  # hysteresis: 3% of the screen inside a region to enter it, 3% outside to leave it
-RIDGE_LAMBDA = 1e-2  # keeps the calibration fit from chasing noise
+RIDGE_LAMBDA = 0.05  # per sample: keeps the fit from chasing noise (scaled by the number of samples)
 MIN_CALIBRATION_POINTS = 5
 
 
@@ -76,15 +76,19 @@ class Calibration:
     std: tuple[float, ...]
     weights: tuple[tuple[float, float], ...]  # one (x, y) weight pair per polynomial term
     open_ratio: float  # the rider's normal eye openness, measured during calibration
+    degree: int = 2  # 1 = straight-line map (7 terms), 2 = curved map (28 terms)
 
 
-def _poly(z: np.ndarray) -> np.ndarray:
-    """Degree-2 terms: 1, each feature, and every product of two features (28 terms for 6 features)."""
+def _poly(z: np.ndarray, degree: int = 2) -> np.ndarray:
+    """Degree 1: [1, features] (7 terms). Degree 2: also every product of two features (28 terms)."""
+    if degree == 1:
+        return np.column_stack([np.ones(len(z)), z])
     pairs = [z[:, i] * z[:, j] for i, j in combinations_with_replacement(range(z.shape[1]), 2)]
     return np.column_stack([np.ones(len(z)), z, *pairs])
 
 
-def fit_calibration(samples: Sequence[tuple[np.ndarray, tuple[float, float]]], open_ratio: float) -> Calibration:
+def fit_calibration(samples: Sequence[tuple[np.ndarray, tuple[float, float]]], open_ratio: float,
+                    degree: int = 1) -> Calibration:
     """samples: (features, (screen_x, screen_y)) pairs collected while the rider looked at known dots."""
     if len({target for _, target in samples}) < MIN_CALIBRATION_POINTS:
         raise ValueError(f"need at least {MIN_CALIBRATION_POINTS} different calibration points")
@@ -92,29 +96,51 @@ def fit_calibration(samples: Sequence[tuple[np.ndarray, tuple[float, float]]], o
     targets = np.array([t for _, t in samples], dtype=float)
     mean, std = feats.mean(axis=0), feats.std(axis=0)
     std = np.where(std < 1e-9, 1.0, std)  # a feature that never changed carries no information; avoid / 0
-    design = _poly((feats - mean) / std)
-    # Ridge regression: (X'X + lambda I) w = X'y, solved for x and y screen coordinates at once.
-    weights = np.linalg.solve(design.T @ design + RIDGE_LAMBDA * np.eye(design.shape[1]), design.T @ targets)
+    design = _poly((feats - mean) / std, degree)
+    # Ridge regression: (X'X + lambda*n I) w = X'y, solved for x and y screen coordinates at once. lambda is
+    # scaled by the sample count n so the smoothing strength does not vanish as more samples are collected.
+    penalty = RIDGE_LAMBDA * len(design) * np.eye(design.shape[1])
+    penalty[0, 0] = 0.0  # never shrink the constant term (the screen centre offset)
+    weights = np.linalg.solve(design.T @ design + penalty, design.T @ targets)
     return Calibration(tuple(map(float, mean)), tuple(map(float, std)),
-                       tuple((float(wx), float(wy)) for wx, wy in weights), float(open_ratio))
+                       tuple((float(wx), float(wy)) for wx, wy in weights), float(open_ratio), degree)
+
+
+def cross_validate(samples: Sequence[tuple[np.ndarray, tuple[float, float]]], open_ratio: float) -> dict[int, float]:
+    """Leave-one-dot-out error for the straight (1) and curved (2) map: fit on 8 dots, predict the 9th.
+
+    Returns {degree: mean distance between predicted and true point, as a fraction of the screen}. This shows
+    how the map does on gaze positions it was NOT trained on, which is what driving needs.
+    """
+    targets = sorted({t for _, t in samples})
+    errors: dict[int, float] = {}
+    for degree in (1, 2):
+        distances = []
+        for held_out in targets:
+            train = [s for s in samples if s[1] != held_out]
+            cal = fit_calibration(train, open_ratio, degree)
+            distances += [float(np.hypot(*(np.array(predict(cal, f)) - np.array(t))))
+                          for f, t in samples if t == held_out]
+        errors[degree] = float(np.mean(distances))
+    return errors
 
 
 def predict(cal: Calibration, features: np.ndarray) -> tuple[float, float]:
     z = (np.asarray(features) - np.array(cal.mean)) / np.array(cal.std)
-    x, y = (_poly(z[None, :]) @ np.array(cal.weights))[0]
+    x, y = (_poly(z[None, :], cal.degree) @ np.array(cal.weights))[0]
     return float(np.clip(x, 0.0, 1.0)), float(np.clip(y, 0.0, 1.0))
 
 
 def save_calibration(cal: Calibration, path: str | Path) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps({"mean": cal.mean, "std": cal.std, "weights": cal.weights,
-                                      "open_ratio": cal.open_ratio}))
+                                      "open_ratio": cal.open_ratio, "degree": cal.degree}))
 
 
 def load_calibration(path: str | Path) -> Calibration:
     data = json.loads(Path(path).read_text())
     return Calibration(tuple(data["mean"]), tuple(data["std"]), tuple(tuple(w) for w in data["weights"]),
-                       float(data["open_ratio"]))
+                       float(data["open_ratio"]), int(data.get("degree", 2)))
 
 
 def smooth(prev: tuple[float, float] | None, point: tuple[float, float],

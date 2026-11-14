@@ -22,6 +22,7 @@ import numpy as np
 from vision.gaze import (
     ARROW_REGIONS,
     GazeState,
+    cross_validate,
     eye_features,
     eye_openness,
     fit_calibration,
@@ -112,7 +113,7 @@ def collect_calibration(cv2, source: FaceLandmarkSource):
     return samples
 
 
-def validate(cv2, source: FaceLandmarkSource, cal) -> dict[str, list[str | None]] | None:
+def validate(cv2, source: FaceLandmarkSource, cal, points_log: list | None = None) -> dict[str, list[str | None]] | None:
     picks: dict[str, list[str | None]] = {}
     for name, box in ARROW_REGIONS.items():
         state, current, got, start = GazeState(), None, [], time.monotonic()
@@ -128,8 +129,20 @@ def validate(cv2, source: FaceLandmarkSource, cal) -> dict[str, list[str | None]
                 return None
             if elapsed > REGION_SETTLE_S:
                 got.append(current)
+                if points_log is not None:
+                    points_log.append((name, sample.point))
         picks[name] = got
     return picks
+
+
+def save_raw(calibration_path: str, raw, points_log) -> None:
+    """Keep the raw run (gitignored data/raw/) so a bad calibration can be analysed instead of guessed at."""
+    out = calibration_path.replace(".json", "_raw.npz")
+    np.savez(out, features=np.array([f for f, _, _ in raw]), targets=np.array([t for _, t, _ in raw]),
+             openness=np.array([o for _, _, o in raw]),
+             validation_region=np.array([name for name, _ in points_log]),
+             validation_point=np.array([p if p is not None else (np.nan, np.nan) for _, p in points_log]))
+    print(f"raw data saved to {out}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -150,10 +163,17 @@ def main(argv: list[str] | None = None) -> int:
             print("calibration cancelled or no face seen")
             return 1
         samples, open_ratio = drop_blinks(raw)
-        cal = fit_calibration(samples, open_ratio)
+        # Pick the map that predicts unseen dots best (fit on 8 dots, test on the 9th, for every dot).
+        errors = cross_validate(samples, open_ratio)
+        degree = min(errors, key=errors.get)
+        print(f"leave-one-dot-out error: straight={errors[1]:.3f} curved={errors[2]:.3f} (screen fraction) "
+              f"-> using {'straight' if degree == 1 else 'curved'}")
+        cal = fit_calibration(samples, open_ratio, degree)
         save_calibration(cal, args.out)
         print(f"saved calibration to {args.out} ({len(samples)} samples, open ratio {open_ratio:.2f})")
-        picks = validate(cv2, source, cal)
+        points_log: list = []
+        picks = validate(cv2, source, cal, points_log)
+        save_raw(args.out, raw, points_log)
         if picks is None:
             return 1
         per, overall = region_accuracy(picks)

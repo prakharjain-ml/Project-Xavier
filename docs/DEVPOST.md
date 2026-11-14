@@ -50,8 +50,8 @@ phone looking at the room.
 ### Following one choice from the eyes to the wheels
 The easiest way to explain the system is to follow "go to that chair".
 
-1. **Eyes.** EyeTrax (an open-source webcam gaze library) runs as its own process and sends a gaze point about
-   15 times a second over a local socket. Each message carries a version and a type; anything malformed is
+1. **Eyes.** EyeTrax (an open-source webcam gaze library) runs as its own process and sends a gaze point for every
+   camera frame over a local socket. Each message carries a version and a type; anything malformed is
    dropped whole. The receiver stamps it with its own clock, so a stale point can never pass as fresh.
 2. **Objects.** YOLO finds chairs, tables and people in the phone feed, and ByteTrack keeps each one's ID
    steady from frame to frame. Small objects get a gaze target at least 12% of the screen wide, because webcam
@@ -143,7 +143,7 @@ could happen with the ESP32 plugged in.
 
 ## Accomplishments that we're proud of
 - **[TODO: the chair driving from the laptop with a rider, and how many runs in a row.]**
-- A rider steered all four directions with only her eyes, and looking away always stopped the chair.
+- A teammate steered all four directions with only their eyes in a live test, and looking away always stopped it.
 - Undocumented hoverboard boards, re-flashed and taking commands from our own bridge.
 - A safety story we can say in one breath: hardware switch, independent 200 ms watchdog, and stop as the default
   answer to anything unclear.

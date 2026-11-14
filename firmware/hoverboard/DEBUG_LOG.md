@@ -3,6 +3,40 @@
 Everything we tried to get the master board (YK187, GD32E235) talking to the ESP32-S3, in order: what we did, what
 happened, and what it taught us. Owner: Keshav (hardware), with Claude Code.
 
+## Project context (why this board matters)
+
+**Project Xavier** ([repo](https://github.com/prakharjain-ml/Project-Xavier)), HackPrinceton Fall 2026 (Nov 13-15),
+Healthcare track + Best Hardware Hack. Team: Keshav (hardware), Pratosh (motors/integration), Vani (software/vision),
+Prakhar (interface, safety logic, demo).
+
+**The product:** an SSVEP brain-computer-interface wheelchair. *Look at a flickering arrow and the chair moves that
+way; look away or close your eyes and it stops.* It is for people with high spinal cord injury, ALS or severe
+cerebral palsy who cannot use a joystick (full problem statement: `docs/PRD.md`).
+
+**The full chain (see `docs/ARCHITECTURE.md`):**
+```
+OpenBCI Cyton (O1/O2/Oz) -> bci/ (filter + FFT/CCA decoder, alpha eyes-closed detector)
+  -> control/ state machine (STOP is the default) -> motors/driver.py (laptop, 20 Hz)
+  -> USB serial "C,<seq>,<left>,<right>" -> ESP32-S3 bridge (200 ms watchdog, ultrasonic obstacle stop, speed clamp)
+  -> UART 19200 -> hoverboard mainboards (RoboDurden GD32 firmware) -> hub motors
+interface/ = pygame flicker arrows (60 FPS); vision/ = YOLO targets for Mode 2
+```
+
+**Requirements this firmware work serves:**
+- **Mode 1 (must-have demo, plan section 1.3):** forward after ~3 s of gaze at FORWARD; turn in place on LEFT/RIGHT;
+  stop within ~1 s on look-away or eyes closed; an object in front stops the chair even while looking FORWARD;
+  never moves with nobody looking; kill switch cuts power; three passes in a row.
+- **Mode 2 (stretch):** pick a detected object by gaze; the chair drives to it and stops near it.
+- **Safety budget:** obstacle -> stop in ~50 ms (ESP32, independent of the laptop); laptop hang -> stop in 200 ms
+  (ESP32 watchdog); board stops itself 500 ms after the last valid frame; speeds clamped to `MAX_SPEED` 150.
+
+**Hardware constraints:** split hoverboard with two YK187 boards (GD32E235, no crystal), 7S Li-ion pack (~28 V),
+ST-Link V2 clone, ESP32-S3, multimeter, charger. No budget for extra parts (no off-the-shelf BLDC controllers),
+so we flash the hoverboard boards themselves. The hardware track's job: **each wheel's board obeys speed commands
+from the ESP32, reliably and safely.** That is the piece this log is about; the BCI, interface and control software
+are built in parallel by the rest of the team and only need the bridge's `C`/`S`/`D` line protocol
+(`docs/INTERFACES.md`).
+
 ## TL;DR (current state)
 - Firmware **`e235_single_usart1.bin` (option 1) runs correctly** on the master. Verified with the debugger:
   72 MHz clock (IRC8M/2 x 18), USART1 enabled, BAUD register = 19200, PA2 actively transmitting feedback frames.

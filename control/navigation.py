@@ -24,7 +24,11 @@ from shared.protocol import MAX_SPEED
 
 ARRIVE_M = 0.7  # stop this far from the object (the ultrasonic stop at 0.5 m is the hard backstop)
 MAX_RANGE_M = 4.0  # HC-SR04 readings beyond this are unreliable: ignored
-STUCK_SPEED = 1e-3  # m/s: below this the chair counts as stopped
+STUCK_SPEED = 1e-3  # m/s: below this the chair counts as stopped (true on the wheels too: to_wheels() lifts every
+#                     slower-than-the-board-can-do command to WHEEL_DEAD_BAND, so "planner moving" = "wheels moving")
+WHEEL_DEAD_BAND = 50  # firmware speed units: the hoverboard firmware treats |speed| < 50 as stop (bridge.ino note).
+#                       50 units is about 0.2 m/s straight, or about 41 deg/s turning on the spot.
+ROUNDS_TO_STOP = 0.5  # firmware speed units: a command smaller than this always rounded to (0, 0) = stop
 
 
 @dataclass(frozen=True)
@@ -133,11 +137,35 @@ def _unstick(w: float, goal, obstacles: np.ndarray, cfg: NavConfig) -> tuple[flo
     return 0.0, direction * min(cfg.max_yaw_rate, abs(w) + cfg.max_delta_yaw_rate * cfg.dt)
 
 
+def _out_of_dead_band(left: float, right: float) -> tuple[float, float]:
+    """Make sure the board acts on what the planner asked for: each wheel ends up 0 or at least WHEEL_DEAD_BAND.
+    Before this, the fastest turn on the spot came out as (-49, 49) and anything under 0.2 m/s under 50: the
+    board ignored it and the chair stood still while the planner believed it was moving."""
+    fastest = max(abs(left), abs(right))
+    if fastest < ROUNDS_TO_STOP:
+        return 0.0, 0.0  # the planner asked for stop (or rounding noise): stay stopped
+    if fastest < WHEEL_DEAD_BAND:
+        # Motion is wanted but even the faster wheel is too slow for the board. Scale BOTH wheels by the same
+        # factor until the faster one is exactly at the dead band: same curve, at the slowest speed that exists.
+        left, right = left * WHEEL_DEAD_BAND / fastest, right * WHEEL_DEAD_BAND / fastest
+    return _snap_wheel(left), _snap_wheel(right)
+
+
+def _snap_wheel(speed: float) -> float:
+    """One wheel still inside the dead band (the slower one of a turn) goes to whichever is nearer, stop or the
+    dead band. Nearest keeps the error under 25 units and keeps a wheel hovering around 0 at 0, where "always
+    lift" would flip it between -50 and +50."""
+    if abs(speed) >= WHEEL_DEAD_BAND:
+        return speed
+    return math.copysign(WHEEL_DEAD_BAND, speed) if abs(speed) >= WHEEL_DEAD_BAND / 2 else 0.0
+
+
 def to_wheels(v: float, w: float, cfg: NavConfig = NavConfig()) -> tuple[int, int]:
     """(m/s, rad/s) -> (left, right) firmware speeds. Differential drive: the outer wheel runs faster.
-    Scaled so the fastest wheel the planner can ask for equals MAX_SPEED; the conversion is VERIFY on the chair."""
+    Scaled so the fastest wheel the planner can ask for equals MAX_SPEED; the conversion is VERIFY on the chair.
+    Each wheel comes out as 0 or at least WHEEL_DEAD_BAND (see _out_of_dead_band); the top speed is unchanged."""
     half = cfg.track_width / 2
     top = cfg.max_speed + cfg.max_yaw_rate * half
-    left, right = (v - w * half) / top * MAX_SPEED, (v + w * half) / top * MAX_SPEED
+    left, right = _out_of_dead_band((v - w * half) / top * MAX_SPEED, (v + w * half) / top * MAX_SPEED)
     clamp = lambda s: int(max(-MAX_SPEED, min(MAX_SPEED, round(s))))  # noqa: E731
     return clamp(left), clamp(right)

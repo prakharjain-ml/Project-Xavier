@@ -72,7 +72,7 @@ class FaceLandmarkSource:
 
 
 def offer_latest(q, item) -> None:
-    """Latest-only put for a maxsize=1 queue (multiprocessing or queue.Queue). Never blocks."""
+    """Latest-only put for a maxsize=1 queue. Never blocks."""
     try:
         q.get_nowait()
     except Empty:
@@ -83,13 +83,12 @@ def offer_latest(q, item) -> None:
         pass
 
 
-def run_gaze_process(out_queue, camera_index: int, calibration_path: str, stop_event,
+def run_gaze_process(emit, camera_index: int, calibration_path: str, should_stop,
                      model_path: str = MODEL_PATH) -> None:
-    """Child-process entry: camera -> landmarks -> GazeSample -> out_queue, until stop_event is set.
+    """camera -> landmarks -> GazeSample -> emit(sample), until should_stop() is true.
 
-    On any failure it just stops sending; the app then sees stale gaze -> NONE -> the chair stops.
+    On any failure it just stops emitting; the app then sees stale gaze -> NONE -> the chair stops.
     """
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         cal = load_calibration(calibration_path)
         source = FaceLandmarkSource(camera_index, model_path)
@@ -98,15 +97,50 @@ def run_gaze_process(out_queue, camera_index: int, calibration_path: str, stop_e
         return
     state, frames, started = GazeState(), 0, time.monotonic()
     try:
-        while not stop_event.is_set():
+        while not should_stop():
             frame, points = source.read()
             if frame is None:  # camera hiccup: send nothing; the app treats silence as stale -> STOP
-                stop_event.wait(0.01)
+                time.sleep(0.01)
                 continue
             state, sample = gaze_step(points, cal, state, time.monotonic())
-            offer_latest(out_queue, sample)
+            emit(sample)
             frames += 1
     finally:
         source.close()
         elapsed = time.monotonic() - started
         log.info("gaze tracker stopped: %d frames in %.1f s (%.1f FPS)", frames, elapsed, frames / max(elapsed, 1e-6))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run as its own program (launched by app.py --gaze): sends each GazeSample as JSON to 127.0.0.1:<port>.
+
+    A separate program, not a multiprocessing child: a spawned child re-imports app.py (pygame) and then cv2,
+    which brings back the SDL2 clash (seen: 0 samples). Exits by itself if the app that started it dies.
+    """
+    import argparse
+    import socket
+    import sys
+
+    from vision.gaze import encode_gaze_message
+
+    parser = argparse.ArgumentParser(description="Eye tracker: sends gaze samples over localhost UDP.")
+    parser.add_argument("--eye-camera", type=int, default=0)
+    parser.add_argument("--calibration", default=CALIBRATION_PATH)
+    parser.add_argument("--port", type=int, required=True)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    parent = os.getppid()
+
+    def emit(sample) -> None:
+        try:
+            sock.sendto(encode_gaze_message(sample), ("127.0.0.1", args.port))
+        except OSError:
+            pass  # nobody listening right now: drop it (the app treats gaps as stale -> STOP)
+
+    run_gaze_process(emit, args.eye_camera, args.calibration, should_stop=lambda: os.getppid() != parent)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

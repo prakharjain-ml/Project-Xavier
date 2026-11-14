@@ -204,3 +204,38 @@ def test_end_to_end_gaze_on_forward_arrow_drives_after_dwell(monkeypatch, tmp_pa
     first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
     assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")
     assert first_drive >= 25  # the 1.5 s dwell still applies to gaze
+
+
+def test_start_gaze_process_receives_udp_samples_and_drops_garbage(monkeypatch):
+    """The real receiver + socket, with the tracker program replaced by a stand-in (no camera)."""
+    import socket as _socket
+
+    import app
+    from vision.gaze import encode_gaze_message
+
+    launched = {}
+
+    class FakePopen:
+        def __init__(self, cmd, cwd=None):
+            launched["cmd"] = cmd
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(app.subprocess, "Popen", FakePopen)
+    process, q, stop = app.start_gaze_process(0, "cal.json")
+    try:
+        cmd = launched["cmd"]
+        assert cmd[1:3] == ["-m", "vision.gaze_tracker"]
+        port = int(cmd[cmd.index("--port") + 1])
+        sender = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sender.sendto(b"garbage", ("127.0.0.1", port))
+        sender.sendto(encode_gaze_message(GazeSample((0.5, 0.1), False, True, 0.0)), ("127.0.0.1", port))
+        sample = q.get(timeout=2)
+        assert sample.point == (0.5, 0.1)  # garbage was dropped, the valid sample arrived
+        assert abs(sample.t - _time.monotonic()) < 1.0  # stamped on arrival with this process's clock
+    finally:
+        stop.set()

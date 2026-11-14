@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import multiprocessing
 import os
 import queue
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -43,7 +44,7 @@ from shared.protocol import (
     StopSource,
     Target,
 )
-from vision.gaze import ARROW_REGIONS, pick_region  # numpy only: no cv2 in this (pygame) process
+from vision.gaze import ARROW_REGIONS, decode_gaze_message, pick_region  # numpy only: no cv2 here
 from vision.gaze_tracker import CALIBRATION_PATH  # module top imports no cv2/mediapipe
 
 log = logging.getLogger("app")
@@ -131,14 +132,34 @@ class GazeIntentSource:
 
 
 def start_gaze_process(eye_camera: int, calibration: str):
-    """Start the eye tracker in its own process (cv2 + mediapipe must not share the pygame process)."""
-    from vision.gaze_tracker import run_gaze_process
+    """Start the eye tracker as its own program and receive its samples over localhost UDP.
 
-    ctx = multiprocessing.get_context("spawn")
-    gaze_queue, stop = ctx.Queue(maxsize=1), ctx.Event()
-    process = ctx.Process(target=run_gaze_process, args=(gaze_queue, eye_camera, calibration, stop),
-                          name="gaze", daemon=True)
-    process.start()
+    Returns (process, queue of GazeSample, stop event). A separate program (not multiprocessing): a spawned
+    child would re-import this file, i.e. pygame, next to cv2 -> SDL2 clash (it sent 0 samples that way).
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))  # any free port; the tracker is told which one
+    sock.settimeout(0.2)
+    port = sock.getsockname()[1]
+    process = subprocess.Popen([sys.executable, "-m", "vision.gaze_tracker", "--eye-camera", str(eye_camera),
+                                "--calibration", calibration, "--port", str(port)],
+                               cwd=os.path.dirname(os.path.abspath(__file__)))
+    gaze_queue, stop = queue.Queue(maxsize=1), threading.Event()
+
+    def receive() -> None:
+        while not stop.is_set():
+            try:
+                raw = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            sample = decode_gaze_message(raw, time.monotonic())
+            if sample is not None:  # invalid messages are dropped whole (INTERFACES.md transport rule)
+                offer_latest(gaze_queue, sample)
+        sock.close()
+
+    threading.Thread(target=receive, name="gaze-receiver", daemon=True).start()
     return process, gaze_queue, stop
 
 
@@ -221,9 +242,11 @@ def main(argv: list[str] | None = None, start_events: list[str] | None = None) -
         if gaze_stop is not None:
             gaze_stop.set()
         if gaze_process is not None:
-            gaze_process.join(timeout=3)
-            if gaze_process.is_alive():
-                gaze_process.terminate()
+            gaze_process.terminate()  # the tracker also exits by itself if this app dies
+            try:
+                gaze_process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                gaze_process.kill()
         pygame.quit()
     print(f"summary: frames={stats.frames} bridge_lines={driver.status().lines_sent} "
           f"final_state={result['state'].value}")

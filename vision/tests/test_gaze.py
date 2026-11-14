@@ -159,3 +159,24 @@ def test_blink_holds_the_smoothed_point_not_the_raw_one():
     state, moving = gaze_step(face(iris_shift=(0.008, 0.0)), cal, state, now=0.03)  # jump right: smoothed lags
     _, blink = gaze_step(face(lid_gap=0.003), cal, state, now=0.06)
     assert blink.point == moving.point  # the screen cursor does not jump when the rider blinks
+
+
+def test_gaze_message_round_trip_and_receiver_timestamps():
+    from vision.gaze import GazeSample, decode_gaze_message, encode_gaze_message
+
+    raw = encode_gaze_message(GazeSample((0.25, 0.75), False, True, 123.0))
+    decoded = decode_gaze_message(raw, now=500.0)
+    assert decoded == GazeSample((0.25, 0.75), False, True, 500.0)  # time = arrival time, not sender clock
+    no_gaze = decode_gaze_message(encode_gaze_message(GazeSample(None, True, True, 1.0)), now=2.0)
+    assert no_gaze.point is None and no_gaze.closed
+
+
+@pytest.mark.parametrize("raw", [
+    b"not json", b'{"v": 99, "type": "GazeSample", "x": 0.1, "y": 0.1, "closed": false, "face": true}',
+    b'{"v": 1, "type": "TargetSet"}', b'{"v": 1, "type": "GazeSample", "x": 0.1}',
+    b'{"v": 1, "type": "GazeSample", "x": "a", "y": 0.1, "closed": false, "face": true}',
+])
+def test_invalid_gaze_messages_are_dropped(raw):
+    from vision.gaze import decode_gaze_message
+
+    assert decode_gaze_message(raw, now=1.0) is None

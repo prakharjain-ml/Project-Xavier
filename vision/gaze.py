@@ -200,3 +200,30 @@ def gaze_step(points: np.ndarray | None, cal: Calibration, state: GazeState,
     else:
         smoothed = smooth(state.smoothed, held)
     return GazeState(blink, smoothed), GazeSample(smoothed, closed, True, now)
+
+
+# ---------------------------------------------------------------- wire format (tracker process -> app, UDP)
+# docs/INTERFACES.md transport rule: every message carries "v" and "type"; anything invalid is dropped whole.
+GAZE_MESSAGE_TYPE = "GazeSample"
+GAZE_MESSAGE_VERSION = 1
+
+
+def encode_gaze_message(sample: GazeSample) -> bytes:
+    return json.dumps({"v": GAZE_MESSAGE_VERSION, "type": GAZE_MESSAGE_TYPE, "x": sample.x, "y": sample.y,
+                       "closed": sample.closed, "face": sample.face}).encode()
+
+
+def decode_gaze_message(raw: bytes, now: float) -> GazeSample | None:
+    """Parse one datagram. Timestamped with the RECEIVER's clock (`now`) so the two processes' clocks never
+    have to agree; localhost delivery takes well under a millisecond."""
+    try:
+        data = json.loads(raw)
+        if data["v"] != GAZE_MESSAGE_VERSION or data["type"] != GAZE_MESSAGE_TYPE:
+            return None
+        x, y, closed, face = data["x"], data["y"], data["closed"], data["face"]
+        if not isinstance(closed, bool) or not isinstance(face, bool):
+            return None
+        point = None if x is None or y is None else (float(x), float(y))
+    except (ValueError, KeyError, TypeError):
+        return None
+    return GazeSample(point, closed, face, now)

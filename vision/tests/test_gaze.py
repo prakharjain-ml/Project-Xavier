@@ -122,3 +122,40 @@ def test_blink_state_is_immutable():
     state = BlinkState()
     update_blink(state, point=(0.1, 0.1), closed=False, now=0.0)
     assert state.last_point is None
+
+
+def _identity_like_calibration():
+    """Calibration fitted on synthetic data so iris shift maps to screen position."""
+    samples = []
+    for tx, ty in [(x, y) for x in (0.1, 0.5, 0.9) for y in (0.1, 0.5, 0.9)]:
+        samples.append((eye_features(face(iris_shift=((tx - 0.5) * 0.02, (ty - 0.5) * 0.01))), (tx, ty)))
+    return fit_calibration(samples * 3, open_ratio=0.25)
+
+
+def test_gaze_step_open_eyes_gives_a_point_closed_eyes_hold_then_none():
+    from vision.gaze import GazeState, gaze_step
+
+    cal = _identity_like_calibration()
+    state, s1 = gaze_step(face(iris_shift=(0.0, -0.004)), cal, GazeState(), now=0.0)  # looking up
+    assert s1.face and not s1.closed and s1.y < 0.3
+    state, s2 = gaze_step(face(lid_gap=0.003), cal, state, now=0.1)  # blink begins
+    assert s2.closed and s2.point == s1.point
+    _, s3 = gaze_step(face(lid_gap=0.003), cal, state, now=0.7)  # still closed 0.6 s later
+    assert s3.point is None
+
+
+def test_gaze_step_no_face():
+    from vision.gaze import GazeState, gaze_step
+
+    _, sample = gaze_step(None, _identity_like_calibration(), GazeState(), now=1.0)
+    assert not sample.face and sample.point is None and sample.t == 1.0
+
+
+def test_blink_holds_the_smoothed_point_not_the_raw_one():
+    from vision.gaze import GazeState, gaze_step
+
+    cal = _identity_like_calibration()
+    state, _ = gaze_step(face(iris_shift=(0.0, -0.004)), cal, GazeState(), now=0.0)  # up
+    state, moving = gaze_step(face(iris_shift=(0.008, 0.0)), cal, state, now=0.03)  # jump right: smoothed lags
+    _, blink = gaze_step(face(lid_gap=0.003), cal, state, now=0.06)
+    assert blink.point == moving.point  # the screen cursor does not jump when the rider blinks

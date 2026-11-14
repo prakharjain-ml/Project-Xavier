@@ -158,3 +158,45 @@ def update_blink(state: BlinkState, point: tuple[float, float] | None, closed: b
     if point is None:  # no face found (turned away, out of frame): no gaze at once
         return BlinkState(), None
     return BlinkState(last_point=point), point
+
+
+@dataclass(frozen=True)
+class GazeState:
+    blink: BlinkState = BlinkState()
+    smoothed: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True)
+class GazeSample:
+    """One gaze reading sent to the app. point is None when there is no usable gaze (no face / eyes closed)."""
+
+    point: tuple[float, float] | None
+    closed: bool
+    face: bool
+    t: float  # time.monotonic() when the frame was processed
+
+    @property
+    def x(self) -> float | None:
+        return None if self.point is None else self.point[0]
+
+    @property
+    def y(self) -> float | None:
+        return None if self.point is None else self.point[1]
+
+
+def gaze_step(points: np.ndarray | None, cal: Calibration, state: GazeState,
+              now: float) -> tuple[GazeState, GazeSample]:
+    """One camera frame -> one GazeSample. points is the (478, 2) landmark array, or None if no face was found."""
+    if points is None:
+        blink, _ = update_blink(state.blink, None, closed=False, now=now)
+        return GazeState(blink, None), GazeSample(None, False, False, now)
+    closed = eye_openness(points) < CLOSED_FRACTION * cal.open_ratio
+    raw = None if closed else predict(cal, eye_features(points))
+    blink, held = update_blink(state.blink, raw, closed, now)
+    if held is None:
+        return GazeState(blink, None), GazeSample(None, closed, True, now)
+    if closed and state.smoothed is not None:
+        smoothed = state.smoothed  # during a blink keep the last SMOOTHED point (no jump at every blink)
+    else:
+        smoothed = smooth(state.smoothed, held)
+    return GazeState(blink, smoothed), GazeSample(smoothed, closed, True, now)

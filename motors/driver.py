@@ -4,6 +4,9 @@
 bridge's distance/state lines. Anything wrong (no fresh command, unplugged cable, no port) means it sends STOP
 or nothing at all, and the ESP32's own 200 ms watchdog then stops the wheels.
 
+Soft start: a wheel's speed may grow by at most SLEW_STEP per line, so the chair eases off from standstill
+(also after any stop and after a reconnect) instead of jumping to the planner's speed. Stops are never slowed.
+
 It never chooses a port itself: the caller passes `open_port`. Auto-detecting is dangerous here because the
 OpenBCI dongle also appears as /dev/cu.usbserial-*, and motor lines must never go to the EEG board.
 Agents test this only with MockSerial; a human runs it with a real port (rules/50-motors.mdc).
@@ -12,13 +15,14 @@ Agents test this only with MockSerial; a human runs it with a real port (rules/5
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from motors.bridge_protocol import BridgeStatus, encode_command, parse_status
+from motors.bridge_protocol import BridgeStatus, clamp_speed, encode_command, parse_status
 from shared.protocol import CONTROL_HZ, MotorCommand
 
 log = logging.getLogger("motors.driver")
@@ -28,13 +32,47 @@ COMMAND_STALE_S = 0.2  # no new command from control for this long -> send STOP 
 BRIDGE_STALE_S = 0.5  # distance older than this is treated as unknown
 REOPEN_S = 1.0  # retry opening a lost port this often
 FINAL_STOP_LINES = 5  # stop lines sent when the driver shuts down
+# Soft start: the most a wheel's speed may GROW per line sent. Lines go out CONTROL_HZ = 20 times a second and the
+# speed cap is 150, so 8 per line takes 19 lines, about 0.95 s, from standstill to the cap (and 13 lines, 0.65 s,
+# to the planner's top of about 101). Slowing down and stopping are never limited.
+SLEW_STEP = 8
 
-
-OPENBCI_DONGLE_MARK = "usbserial-DM"  # FTDI chip in the OpenBCI dongle; motor lines must never go there
+# The OpenBCI dongle has an FTDI chip. macOS names an FTDI port after the chip's serial number, which starts
+# with a letter: usbserial-DM00Q7XX, -DN0096XA, -DQ007UBV, -D200PMA1. The usual ESP32 boards have a CP210x or
+# CH340 chip, and macOS names those with digits (usbserial-0001, usbserial-1410) or with the driver's own name
+# (SLAB_USBtoUART, wchusbserial1410, usbmodem1101).
+# What this can tell apart: an FTDI-style name from those ESP32 names, on macOS (and Linux /dev/serial/by-id).
+# What it cannot: Windows "COM3" and Linux "/dev/ttyUSB0" say nothing about the device, so they pass, and
+# an ESP32 board that happens to have an FTDI chip, or a serial number starting with a letter, is refused.
+# It is a guard against picking the wrong line of `ls /dev/cu.*`, not proof of what is plugged in.
+_FTDI_STYLE_PORT = re.compile(r"usbserial-[A-Za-z]|FTDI", re.IGNORECASE)
 
 
 def looks_like_openbci_dongle(port: str) -> bool:
-    return OPENBCI_DONGLE_MARK in port
+    """True if the port NAME looks like an FTDI adapter, which is what the OpenBCI dongle is. Motor lines must
+    never go to the EEG board, so callers refuse such a port. See the comment above for what a name can show."""
+    return _FTDI_STYLE_PORT.search(port) is not None
+
+
+def _slew_wheel(sent: int, target: int, step: int) -> int:
+    """Next speed for one wheel, given the speed on the previous line (`sent`) and the speed now asked for."""
+    if target == 0 or sent * target < 0:
+        # Stopping is immediate. A reversal (the signs differ, so the product is negative) also puts this wheel
+        # at zero for one line; the next line then starts the ramp in the new direction from zero.
+        return 0
+    if abs(target) <= abs(sent) + step:
+        return target  # slowing down, or within one step of the target: send it as asked
+    return sent + step if target > 0 else sent - step  # speeding up: one step further from zero
+
+
+def slew_limited(command: MotorCommand, sent: tuple[int, int], step: int = SLEW_STEP) -> MotorCommand:
+    """Soft start: `command` with each wheel allowed to speed up by at most `step` beyond `sent`, the (left,
+    right) speeds on the previous line. A stop passes through untouched. Returns a new command."""
+    if command.stop:
+        return command
+    left = _slew_wheel(sent[0], clamp_speed(command.left), step)
+    right = _slew_wheel(sent[1], clamp_speed(command.right), step)
+    return MotorCommand(left, right, False, command.t)
 
 
 def open_serial(port_name: str) -> Any:
@@ -64,6 +102,7 @@ class MotorDriver:
         self._bridge: tuple[BridgeStatus, float] | None = None
         self._port: Any = None
         self._seq = 0
+        self._sent_speeds = (0, 0)  # (left, right) on the newest line written: where the soft-start ramp stands
         self._lines_sent = 0
         self._rx = b""
 
@@ -137,6 +176,9 @@ class MotorDriver:
         port = self._port
         if port is None:
             return False
+        # Every line passes through here, so the soft start cannot be bypassed. It only changes the speeds in a
+        # line: it never holds a line back, and a STOP goes out exactly as before.
+        command = slew_limited(command, self._sent_speeds)
         try:
             port.write(encode_command(command, self._seq).encode())
         except OSError as error:
@@ -146,6 +188,8 @@ class MotorDriver:
         with self._lock:
             self._seq += 1
             self._lines_sent += 1
+        # After a stop line the ramp starts again from zero, whatever speed the wheels had before it.
+        self._sent_speeds = (0, 0) if command.stop else (command.left, command.right)
         return True
 
     def _read_replies(self) -> None:
@@ -168,6 +212,9 @@ class MotorDriver:
                     self._bridge = (parsed, time.monotonic())
 
     def _close(self) -> None:
+        # The port is gone, so the ESP32 watchdog stops the wheels. Whatever port opens next starts the ramp
+        # from zero: a reconnect must not resume at the old speed.
+        self._sent_speeds = (0, 0)
         with self._lock:
             port, self._port = self._port, None
         if port is not None:

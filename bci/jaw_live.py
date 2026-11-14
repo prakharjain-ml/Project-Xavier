@@ -12,6 +12,7 @@ Close the OpenBCI GUI first: only one program can hold the board.
 from __future__ import annotations
 
 import argparse
+import logging
 import queue
 import sys
 import threading
@@ -20,10 +21,13 @@ from collections.abc import Callable
 
 import numpy as np
 
-from bci.jaw import WINDOW_S, JawState, calibrate_threshold, emg_rms, update_jaw
+from bci.jaw import WINDOW_S, JawState, calibrate_threshold, dead_reason, emg_rms, mark_dead, update_jaw
+
+log = logging.getLogger("bci.jaw_live")
 
 RELAX_S, CLENCH_S, CLENCH_REST_S, N_CLENCHES = 10.0, 1.0, 2.0, 3
 WIFI_IP, WIFI_PORT = "192.168.4.1", 6677
+DEAD_WARN_EVERY_S = 5.0  # while the live signal is flat or railed, say so in the log this often
 
 
 class JawStream:
@@ -33,6 +37,8 @@ class JawStream:
         self.fs, self.n = fs, int(round(WINDOW_S * fs))
         self._buffer = np.zeros((0, 0))
         self._calibration: dict[str, list[float]] = {"relaxed": [], "clench": []}
+        self._calibration_dead: list[str] = []  # one entry per flat or railed calibration window: why
+        self.signal_problem: str | None = None  # live: why the newest window was flat or railed, None if fine
         self.threshold: float | None = None
         self.clench_ratio: float | None = None
         self._state, self._t = JawState(), 0.0
@@ -46,15 +52,27 @@ class JawStream:
 
     def collect(self, phase: str, chunk: np.ndarray) -> None:
         """Calibration data: phase is 'relaxed' or 'clench'."""
-        self._calibration[phase] += [emg_rms(w, self.fs) for w in self._windows(chunk)]
+        for window in self._windows(chunk):
+            reason = dead_reason(window)
+            if reason is not None:
+                self._calibration_dead.append(reason)
+            self._calibration[phase].append(emg_rms(window, self.fs))
 
     def finish_calibration(self) -> float:
+        """Returns the threshold. Raises ValueError (and leaves no threshold) if the headset cannot be trusted."""
         relaxed, clenches = self._calibration["relaxed"], self._calibration["clench"]
+        # Strict on purpose: even one flat or railed window means a channel is not really connected, and a
+        # channel like that can jump around later and look like a clench. Fix it or leave it out (--channels).
+        if self._calibration_dead:
+            raise ValueError(f"headset signal is dead: {self._calibration_dead[0]} in {len(self._calibration_dead)} "
+                             f"of {len(relaxed) + len(clenches)} calibration windows; fix that electrode or leave "
+                             "the channel out, then calibrate again")
         # Only the strongest third of the clench windows: the clench prompt includes reaction time.
         strongest = sorted(clenches)[-max(1, len(clenches) // 3):]
         # Measured on THIS rider: how much stronger a clench is than rest (the number for the Devpost/gallery).
+        threshold = calibrate_threshold(relaxed, strongest)  # raises ValueError before anything is stored
         self.clench_ratio = float(np.median(strongest) / max(np.median(relaxed), 1e-9))
-        self.threshold = calibrate_threshold(relaxed, strongest)
+        self.threshold = threshold
         self._buffer = np.zeros((0, 0))
         return self.threshold
 
@@ -64,6 +82,10 @@ class JawStream:
         for window in self._windows(chunk):
             self._t += WINDOW_S
             if self.threshold is None:
+                continue
+            self.signal_problem = dead_reason(window)
+            if self.signal_problem is not None:  # flat or railed: not a measurement, so it can never confirm
+                self._state = mark_dead(self._state, self._t)
                 continue
             self._state, hit = update_jaw(self._state, emg_rms(window, self.fs), self._t, self.threshold)
             if hit:
@@ -141,6 +163,7 @@ class JawConfirmSource:
         self._events: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._fake_until = 0.0  # practice mode only: add a fake clench to data until this time
+        self.error: Exception | None = None  # what killed the reader thread, if anything did (see alive())
         self._thread = threading.Thread(target=self._run, name="jaw-confirm", daemon=True)
 
     def calibrate(self, show: Callable[[str], None]) -> float:
@@ -163,6 +186,11 @@ class JawConfirmSource:
         """Practice mode (synthetic board): pretend the rider clenches for `seconds`."""
         self._fake_until = time.monotonic() + seconds
 
+    def alive(self) -> bool:
+        """False once the reader thread has died from an error (kept in .error): no clench can confirm any more.
+        The UI loop should check this every pass, like it checks that the eye tracker is still running."""
+        return self.error is None
+
     def take(self) -> bool:
         """True if at least one clench was confirmed since the last call."""
         fired = False
@@ -184,6 +212,16 @@ class JawConfirmSource:
             pass
 
     def _run(self) -> None:
+        try:
+            self._read_loop()
+        except Exception as error:  # e.g. the board was unplugged: BrainFlow raises from get_board_data()
+            # Without this the thread would end silently and the screen would wait for a confirm forever.
+            # Logged first, so by the time alive() turns False the reason is already in the log.
+            log.exception("jaw reader thread died (%s): no clench can confirm from now on", error)
+            self.error = error
+
+    def _read_loop(self) -> None:
+        warned_at = float("-inf")
         while not self._stop.is_set():
             time.sleep(0.05)
             data = self._board.get_board_data()[self._rows]
@@ -193,6 +231,10 @@ class JawConfirmSource:
                 data = data + fake_clench(self._fs, data.shape[1] / self._fs, len(self._rows))
             for _ in self._stream.push(data):
                 self._events.put(time.monotonic())
+            problem, now = self._stream.signal_problem, time.monotonic()
+            if problem is not None and now - warned_at >= DEAD_WARN_EVERY_S:
+                warned_at = now
+                log.warning("jaw signal is dead: %s; clenches cannot confirm until it recovers", problem)
 
 
 def main(argv: list[str] | None = None) -> int:

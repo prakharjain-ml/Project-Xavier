@@ -18,6 +18,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 ---
 
 ## bci/ (owner: Vani)
+### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: jaw confirm)
+- Done: calibration refuses a dead or railed headset (all zeros, or the constant railed value, used to give threshold 0 and a confirm 0.3 s after start). At run time a flat or railed window never counts toward a clench, cancels one in progress, and blocks confirms for 1 s. A crashed reader thread is logged and visible through `source.alive()` / `source.error`.
+- Strict on purpose: one bad window on any channel in use fails calibration. With channels 1,2 and channel 2 railed, fix the electrode or pass `--jaw-channels 1`.
+- Not fixed, known: strong mains hum from a detached (not railed) electrode can still look like a clench (2 mV of 60 Hz read as 10x the relaxed level in a synthetic check). A board that stops sending samples is still silent. Still no real-head jaw data in the repo.
+- Evidence: `python -m pytest -q bci/tests motors/tests` -> 101 passed (was 40); 7 mutation checks each fail a test.
+
 ### Sat Nov 14, ~1 pm - Claude Code (Opus 5.5), for Prakhar (Vani: please review, it is in your folder)
 - Done: `bci/jaw.py` (jaw-clench EMG detector: 40-200 Hz energy per 0.1 s, +-12 Hz mains guard, held >= 0.3 s, once per clench, refuses to calibrate if clench < 3x relaxed) and `bci/jaw_live.py` (live test: --dongle PORT / --wifi / --synthetic practice). Step-by-step: `docs/JAW_CONFIRM.md` (incl. Wi-Fi dropouts: battery, Auto-Join, prefer the USB dongle).
 - Next step (HUMAN): fix railing (ear clips), then `python -m bci.jaw_live --dongle /dev/cu.usbserial-...`; pass = 10 clenches -> 9-10 CONFIRMs, 30 s talking -> 0.
@@ -46,6 +52,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## control/ (owner: Prakhar design, Pratosh integration)
+### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: arrival, dead band)
+- Done: `nav_step(..., frame_h=...)` now reports ARRIVED when the camera can no longer measure the target getting closer: its box fills 90% of the frame height, or is cut off by the bottom edge and reads 2.5 m or less. A cut-off box reading farther is a stop without arrival. Before, the estimate could never drop below 0.87 m (chair), 0.72 m (table) or 1.63 m (person) against `ARRIVE_M` 0.7 m, and the simulated chair drove into all three. `to_wheels()` keeps every non-zero command at or above the board's dead band (`WHEEL_DEAD_BAND = 50`); the spin was (-49, 49) before.
+- Changes behaviour, check on the floor: (1) the chair now stops where the target's foot leaves the picture, about 1.1 to 2.0 m away depending on camera height and tilt, not 0.7 m. A steeper downward tilt brings it closer. (2) Turn-in-place now really moves the wheels (about 41 deg/s). It has never run on hardware. (3) `WHEEL_DEAD_BAND = 50` comes from a comment in `bridge.ino`, not a measurement: send 45 then 55 to a wheel to check.
+- Evidence: `python -m pytest -q control/tests` -> 105 passed (was 79); 12 mutation checks each fail a test.
+
 ### Sat Nov 14, ~2:30 am - Claude Code (Opus 5.5), for Prakhar
 - Done: `control/state_machine.py`: pure `step(prev, ControlInputs, now, mapping)` -> (ControllerState, MotorCommand, ControlStatus); every SAFETY.md row tested (`control/tests/test_state_machine.py`, 53 tests incl. 1,000-intent fuzz and a 20 Hz dwell run). `provisional_mapping` = INTERFACES.md table; Pratosh's `control/mapping.py` (task 2.12) plugs in via `mapping=`.
 - Interpretations for the team (please confirm at the 11 am sync): (1) stale/missing Intent does NOT clear E_STOP; only re-arm does. (2) "no active StopRequest" = none in the last `STOP_ACTIVE_S` = 0.5 s, so `bci/alpha.py` must keep sending StopRequest while eyes stay closed.
@@ -61,6 +72,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: soft start, dongle guard)
+- Done (`motors/driver.py`): soft start. A wheel's speed rises by at most `SLEW_STEP = 8` per line (0 to the 150 cap in about 0.95 s at 20 lines/s); any decrease or stop is immediate; a reversal goes through zero; the ramp restarts from zero after a stop, a stale command or a reconnect (the first line after a reconnect was `C,20,150,150`, now `C,20,8,8`). `looks_like_openbci_dongle` refuses any `usbserial-<letter>...` or FTDI name, not only `-DM...`.
+- Pratosh please check: the first ramp lines (8 to 48) are inside the board's dead band, so the wheels start at about line 7. A reconnect still resumes driving without a new 1.5 s hold (now from zero). `COM3` and `/dev/ttyUSB0` cannot be told apart from a dongle by name.
+- `test_app.py`: the two end-to-end tests now assert the soft-start ramp instead of a first line at the cap.
+- Evidence: same run as bci above; 6 mutation checks each fail a test.
+
 ### Sat Nov 14, evening - from Keshav's handoff (recorded by Claude Code for Prakhar)
 - Done: LEFT wheel (master board) WORKS end to end: laptop -> ESP32-S3 -> board, forward/back/turn + watchdog stop verified. Link = 5-pin plug (P2 TX, P3 RX), ESP32 GND to a SOLID ground (P1 gave 60 Hz hum). Battery is 7S (~28 V).
 - In progress: RIGHT wheel (slave board): unlock, motor test, flash `e235_single_usart1.bin`, wire GPIO15/16 + its own solid GND.
@@ -100,6 +117,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes in `object_select --drive`, colour floor, better detector)
+- Done (`vision/object_select.py`): a frozen forward camera now stops the chair (the Intent carries the frame's arrival time, so the state machine's 0.5 s stale rule fires; before, 87 drive lines went out on a frozen picture). SPACE = latched emergency stop, R = re-arm, X = cancel in every confirm mode (the same object cannot be re-chosen until the gaze leaves it). Arrival is reported once. The planner gets every tracked object as an obstacle, not only the 4 boxes on screen. The session ends if the jaw reader thread dies.
+- Done (route preview): the floor is now found by colour (`vision/floor_seg.py`); Gemini's floor outline was too rough (a bottom strip on the hall frame) so Gemini only adds no-go zones for things the detector misses. Detector switched to `yolo11s-seg` (both hall couches at 0.70 / 0.62 confidence vs 0.42 / 0.39 with the smallest model; 27 ms vs 20 ms a frame). Example on a real hall frame: `docs/img/route_preview_design.jpg`.
+- Not fixed, known: a blink counts as "looked away", so after X or an arrival a rider who keeps staring can re-confirm 1.5 s after a blink. SPACE does not clear the destination (after R the chair can move again after a fresh 1.5 s hold). A camera repeating one picture with new timestamps is not detected. `object_select` still draws the old boxes.
+- Evidence: `python -m pytest -q` -> `554 passed`; `python -m pytest -q vision/tests/test_object_select.py` -> 31 passed; mutation checks for each fix fail a test. Nothing ran on a real port, camera feed for driving, or headset.
+
 ### Sat Nov 14, ~6:27 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (route preview rebuilt: outlines, cursor, route on the real floor)
 - Done: `python -m vision.nav_preview` is rebuilt in the look of Prakhar's reference image. Every object gets a thin cyan outline from a segmentation model (`yolo11n-seg`, in `~/hp26-models/`; `Track.outline` in `vision/detect_track.py`). The mouse stands in for the eyes: rest it on an object for 1.5 s to choose it. Gemini finds the floor and extra no-go zones in a background thread (`vision/scene_ai.py`). The route is planned locally in a top-down view of the floor in real centimetres and drawn back on the image (`vision/floor_route.py`, `vision/route_scene.py`, screen in `vision/hud.py`). Rules: `docs/ROUTE_REQUIREMENTS.md` (12 constraints). The old blue panel is gone.
 - Evidence (command + result): `python -m pytest -q` -> `448 passed`. `python -m vision.nav_preview --image <lounge photo> --cursor 0.87,0.60 --no-window --save out.png` -> `route=8 pts floor=gemini`, saved as `docs/img/route_preview_design.jpg`. Screen draws in about 3.5 ms; planner 2 to 10 ms; Gemini 2.0 to 9.6 s per answer (5 timed calls). Mutation checks for C1, C2, C5, C6 each fail a test.

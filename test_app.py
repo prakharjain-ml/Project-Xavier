@@ -15,6 +15,20 @@ from control.state_machine import ControllerState  # noqa: E402
 from shared.protocol import CONTROL_HZ, DWELL_S, MAX_SPEED, State, Target  # noqa: E402
 
 
+def assert_soft_start_forward(lines):
+    """Forward drive lines as the driver's soft start sends them: the first is one small step, speeds only
+    rise while the command is held, both wheels match, and nothing exceeds the cap. (Not "reaches the cap":
+    on a loaded machine the 3 s run can end before the ramp does.)"""
+    from motors.driver import SLEW_STEP
+
+    drive = [tuple(int(v) for v in line.split(",")[2:]) for line in lines if line.startswith("C,")]
+    assert drive[0] == (SLEW_STEP, SLEW_STEP)
+    lefts = [left for left, _right in drive]
+    assert all(left == right for left, right in drive) and lefts == sorted(lefts)
+    assert max(lefts) <= MAX_SPEED and lefts[-1] > lefts[0]
+
+
+
 class FakeDriver:
     def __init__(self, distance=None):
         self.sent, self.distance = [], distance
@@ -128,7 +142,7 @@ def test_end_to_end_held_forward_reaches_the_port_as_drive_lines_after_dwell(mon
     assert main(["--keyboard", "--mock", "--windowed", "--seconds", "3"], start_events=["space"]) == 0
     lines = ports[0].lines()
     first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
-    assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")  # forward at the speed cap
+    assert_soft_start_forward(lines[first_drive:])
     # Dwell measured in time, not line count (under CPU load the driver sends fewer lines per second).
     assert ports[0].times[first_drive] - ports[0].times[0] >= DWELL_S - 0.15
     assert all(line.startswith("S,") for line in lines[-5:])  # app exit sends explicit STOP
@@ -214,7 +228,7 @@ def test_end_to_end_gaze_on_forward_arrow_drives_after_dwell(monkeypatch, tmp_pa
                 start_events=["space"]) == 0
     lines = ports[0].lines()
     first_drive = next(i for i, line in enumerate(lines) if line.startswith("C,"))
-    assert lines[first_drive].endswith(f",{MAX_SPEED},{MAX_SPEED}")
+    assert_soft_start_forward(lines[first_drive:])
     # Dwell measured in time, not line count (under CPU load the driver sends fewer lines per second).
     assert ports[0].times[first_drive] - ports[0].times[0] >= DWELL_S - 0.15
 

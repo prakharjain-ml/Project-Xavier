@@ -47,6 +47,7 @@ CANVAS_W, CANVAS_H = 1280, 800  # same canvas as the calibration screen, stretch
 MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the screen wide and tall
 SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
 MIN_ACCURACY = 0.85  # calibration check must reach this before selecting objects (one retry)
+MIN_LOOK_S = 0.3  # gaze must rest on a box this long before a clench / key confirms it (no sweep-past picks)
 RED, YELLOW, GREEN, GREY, CURSOR = (0, 0, 255), (0, 220, 255), (0, 220, 0), (160, 160, 160), (255, 120, 0)
 
 
@@ -58,8 +59,8 @@ class Selection:
     box: tuple[float, float, float, float] | None = None  # candidate's last gaze box (0-1 screen coordinates)
 
 
-def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float = DWELL_S,
-                     box: tuple[float, float, float, float] | None = None) -> Selection:
+def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float | None = DWELL_S,
+                     box: tuple[float, float, float, float] | None = None, confirm: bool = False) -> Selection:
     """Dwell confirmation: same object under the gaze for dwell_s -> confirmed. Looking away restarts the dwell.
 
     If the tracker relabels the object under the gaze (new ID, box in the same place: overlap >= SAME_OBJECT_IOU),
@@ -74,7 +75,9 @@ def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float
             return replace(sel, candidate=hit, box=box, confirmed=confirmed)
         return replace(sel, candidate=hit, since=now, box=box)
     sel = replace(sel, box=box if box is not None else sel.box)
-    if now - sel.since >= dwell_s:
+    looked = now - sel.since
+    # Confirm by a clench/key (after a short look), or by dwell alone when dwell_s is set (dwell mode).
+    if (confirm and looked >= MIN_LOOK_S) or (dwell_s is not None and looked >= dwell_s):
         return replace(sel, confirmed=hit)
     return sel
 

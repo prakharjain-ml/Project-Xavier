@@ -43,3 +43,35 @@ def test_bad_contact_fails_calibration_clearly():
         raise AssertionError("calibration should have failed")
     except ValueError as error:
         assert "clench" in str(error)
+
+
+def test_jaw_confirm_source_end_to_end_on_brainflow_fake_board():
+    """Real BrainFlow synthetic board (no hardware) + scripted fake clenches through the real detector."""
+    import time
+
+    from bci.jaw_live import JawConfirmSource
+
+    source = JawConfirmSource("synthetic", relax_s=1.5, clench_s=0.6, rest_s=0.3)
+    try:
+        source.calibrate(show=lambda _text: None)
+        source.start()
+        time.sleep(0.5)
+        assert source.take() is False  # relaxed: no confirmation
+        source.inject_fake_clench(0.8)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not source.take():
+            time.sleep(0.05)
+        assert time.monotonic() < deadline  # the fake clench was confirmed
+    finally:
+        source.stop()
+
+
+def test_parse_channels():
+    import pytest
+
+    from bci.jaw_live import parse_channels
+
+    assert parse_channels("1") == (1,)
+    assert parse_channels("1,2") == (1, 2)
+    with pytest.raises(ValueError):
+        parse_channels("9")

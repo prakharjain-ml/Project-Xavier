@@ -117,3 +117,24 @@ def test_session_ends_at_once_if_the_eye_tracker_dies():
     result = run(FakeCv2(), NoFrames(), model=None, classes=None, gaze_queue=queue.Queue(), hfov=70.0,
                  device="cpu", seconds=5.0, tracker_alive=lambda: False)
     assert result == [] and time.monotonic() - start < 1.0  # did not sit there for the full 5 s
+
+
+def test_confirm_event_needs_a_short_look_first():
+    from vision.object_select import MIN_LOOK_S
+
+    sel = update_selection(Selection(), hit=7, now=0.0, dwell_s=None)
+    sel = update_selection(sel, hit=7, now=MIN_LOOK_S / 2, dwell_s=None, confirm=True)
+    assert sel.confirmed is None  # clench while the eyes are still arriving: ignored
+    sel = update_selection(sel, hit=7, now=MIN_LOOK_S + 0.01, dwell_s=None, confirm=True)
+    assert sel.confirmed == 7
+
+
+def test_confirm_mode_never_confirms_by_dwell_alone():
+    sel = update_selection(Selection(), hit=7, now=0.0, dwell_s=None)
+    sel = update_selection(sel, hit=7, now=10.0, dwell_s=None)
+    assert sel.confirmed is None  # looking for 10 s without a clench does nothing
+
+
+def test_confirm_event_with_nothing_under_the_gaze_does_nothing():
+    sel = update_selection(Selection(), hit=None, now=1.0, dwell_s=None, confirm=True)
+    assert sel.confirmed is None

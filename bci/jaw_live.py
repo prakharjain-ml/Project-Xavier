@@ -12,8 +12,11 @@ Close the OpenBCI GUI first: only one program can hold the board.
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
+import threading
 import time
+from collections.abc import Callable
 
 import numpy as np
 
@@ -65,23 +68,42 @@ class JawStream:
         return fired
 
 
-def connect(args):
+def connect_board(mode: str, port: str | None = None, channels: tuple[int, ...] = (1, 2)):
+    """mode: 'synthetic' (no hardware), 'wifi' (Cyton + Wi-Fi shield) or 'dongle' (Cyton + USB dongle on `port`).
+    Returns (board, eeg rows to use, sampling rate). HUMANS run wifi/dongle; agents only synthetic."""
     from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 
     params = BrainFlowInputParams()
-    if args.synthetic:
+    if mode == "synthetic":
         board_id = BoardIds.SYNTHETIC_BOARD.value
-    elif args.wifi:
+    elif mode == "wifi":
         board_id = BoardIds.CYTON_WIFI_BOARD.value
         params.ip_address, params.ip_port = WIFI_IP, WIFI_PORT
-    else:
+    elif mode == "dongle":
         board_id = BoardIds.CYTON_BOARD.value
-        params.serial_port = args.dongle
+        params.serial_port = port
+    else:
+        raise ValueError(f"unknown board mode {mode!r}")
     board = BoardShim(board_id, params)
     board.prepare_session()
     board.start_stream()
-    rows = BoardShim.get_eeg_channels(board_id)[:2]  # O1, O2 (channels 1-2); any channel sees jaw EMG
+    eeg = BoardShim.get_eeg_channels(board_id)
+    # Only channels with an electrode: an unplugged channel is pure noise and could fake or hide a clench.
+    rows = [eeg[c - 1] for c in channels]
     return board, rows, BoardShim.get_sampling_rate(board_id)
+
+
+def connect(args):
+    mode = "synthetic" if args.synthetic else "wifi" if args.wifi else "dongle"
+    return connect_board(mode, args.dongle, parse_channels(args.channels))
+
+
+def parse_channels(text: str) -> tuple[int, ...]:
+    """'1' or '1,2' -> (1,) / (1, 2). Cyton channels are 1-8 (N1P..N8P)."""
+    channels = tuple(int(c) for c in text.split(",") if c.strip())
+    if not channels or any(c < 1 or c > 8 for c in channels):
+        raise ValueError(f"channels must be 1-8, got {text!r}")
+    return channels
 
 
 def fake_clench(fs: float, seconds: float, channels: int) -> np.ndarray:
@@ -103,6 +125,73 @@ def read(board, rows, fs, seconds: float, synthetic_clench: bool = False) -> np.
     return np.concatenate(parts, axis=1) if parts else np.zeros((len(rows), 0))
 
 
+class JawConfirmSource:
+    """Jaw clenches -> confirm events, for the object-selection screen. Calibrate (relax + 3 clenches), then a
+    background thread reads the board and queues one event per clench. take() is polled by the UI loop."""
+
+    def __init__(self, mode: str, port: str | None = None, relax_s: float = RELAX_S, clench_s: float = CLENCH_S,
+                 rest_s: float = CLENCH_REST_S, channels: tuple[int, ...] = (1, 2)) -> None:
+        self.mode = mode
+        self._board, self._rows, self._fs = connect_board(mode, port, channels)
+        self._stream = JawStream(self._fs)
+        self._durations = (relax_s, clench_s, rest_s)
+        self._events: queue.Queue = queue.Queue()
+        self._stop = threading.Event()
+        self._fake_until = 0.0  # practice mode only: add a fake clench to data until this time
+        self._thread = threading.Thread(target=self._run, name="jaw-confirm", daemon=True)
+
+    def calibrate(self, show: Callable[[str], None]) -> float:
+        """Guided calibration; `show` displays each instruction. Raises ValueError if contact is too poor."""
+        relax_s, clench_s, rest_s = self._durations
+        show(f"Relax your jaw, teeth apart ({relax_s:.0f} s)")
+        self._stream.collect("relaxed", read(self._board, self._rows, self._fs, relax_s))
+        for i in range(N_CLENCHES):
+            show(f"CLENCH your jaw now ({i + 1}/{N_CLENCHES})")
+            self._stream.collect("clench", read(self._board, self._rows, self._fs, clench_s,
+                                                synthetic_clench=self.mode == "synthetic"))
+            show("Relax")
+            read(self._board, self._rows, self._fs, rest_s)
+        return self._stream.finish_calibration()
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def inject_fake_clench(self, seconds: float = 0.6) -> None:
+        """Practice mode (synthetic board): pretend the rider clenches for `seconds`."""
+        self._fake_until = time.monotonic() + seconds
+
+    def take(self) -> bool:
+        """True if at least one clench was confirmed since the last call."""
+        fired = False
+        while True:
+            try:
+                self._events.get_nowait()
+                fired = True
+            except queue.Empty:
+                return fired
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        try:
+            self._board.stop_stream()
+            self._board.release_session()
+        except Exception:  # already released or the board vanished: nothing left to clean up
+            pass
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            time.sleep(0.05)
+            data = self._board.get_board_data()[self._rows]
+            if not data.size:
+                continue
+            if self.mode == "synthetic" and time.monotonic() < self._fake_until:
+                data = data + fake_clench(self._fs, data.shape[1] / self._fs, len(self._rows))
+            for _ in self._stream.push(data):
+                self._events.put(time.monotonic())
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Live jaw-clench confirmation test")
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -110,6 +199,7 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--wifi", action="store_true", help="Cyton with Wi-Fi shield (HUMANS only)")
     mode.add_argument("--dongle", metavar="PORT", help="Cyton with USB dongle, e.g. /dev/cu.usbserial-DM0xxxx (HUMANS only)")
     parser.add_argument("--seconds", type=float, default=60.0, help="length of the live part")
+    parser.add_argument("--channels", default="1,2", help="Cyton channels with an electrode, e.g. 1 or 1,2")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     board, rows, fs = connect(args)

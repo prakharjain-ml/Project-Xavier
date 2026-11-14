@@ -29,7 +29,7 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 ### Sat Nov 14, ~3:00 am - Claude Code (Opus 5.5), for Prakhar
 - Done: `interface/timing.py` (frame-counted `is_on`, `flicker_schedule` 9/7/5/4, `FrameStats` drop/slow counters) and `interface/flicker.py` (photosensitivity warning -> SPACE, four arrows, static outlines, dwell bars from a latest-only `ControlStatus` queue, E-STOP banner, F toggles stats, `--single 12` for task 2.10, `--fake-status` for 2.8, `--seconds N` prints the timing summary). No cv2, no sleep in the render loop.
 - In progress (file:function, state): none.
-- Next step (HUMAN, on the MacBook screen): `python -m interface.flicker --seconds 60` -> need `dropped=0`; `python -m interface.flicker --fake-status`; then 240 fps phone video per target (2.9). Headless tests prove logic only, not timing.
+- Next step (HUMAN, on the MacBook screen): `python -m interface.flicker --seconds 60` -> need mean_fps 59.5-60.5 AND `dropped=0` AND no "NO VSYNC" warning (pygame can claim vsync without pacing: seen at ~570 FPS on the dummy driver; the loop now detects this and falls back to exact-deadline pacing); `python -m interface.flicker --fake-status`; then 240 fps phone video per target (2.9). Headless tests prove logic only, not timing.
 - Known bugs: none known. Dummy-driver runs have no vsync.
 - Evidence (command + result): `python -m pytest -q interface/tests` -> `14 passed`; mutation (bypass warning gate) -> 1 test fails. Caught and fixed a vacuous test ('frames=0' substring matched 'slow_frames=0').
 

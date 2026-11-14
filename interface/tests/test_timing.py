@@ -40,3 +40,18 @@ def test_frame_stats_is_immutable():
     stats = FrameStats()
     update_frame_stats(stats, FRAME_S)
     assert stats.frames == 0
+
+
+def test_pacing_ok_detects_unpaced_or_slow_loops():
+    from interface.timing import pacing_ok
+
+    def stats_at(fps, frames=120):
+        s = FrameStats()
+        for _ in range(frames):
+            s = update_frame_stats(s, 1 / fps)
+        return s
+
+    assert pacing_ok(FrameStats()) is None  # not enough frames yet to judge
+    assert pacing_ok(stats_at(60)) is True
+    assert pacing_ok(stats_at(570)) is False  # vsync claimed but not pacing: arrows would flicker ~10x too fast
+    assert pacing_ok(stats_at(45)) is False

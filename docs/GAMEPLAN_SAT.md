@@ -17,9 +17,15 @@ The two times that never move: **Sat 6:00 pm Mode 2 go/no-go** and **Devpost sub
 | Venue permission to ride, Keshav CONFIRM list | UNKNOWN | paste answers into PROGRESS.md |
 
 ## First 30 minutes after waking (Prakhar)
-1. `git pull` and read PROGRESS.md (bci, motors/firmware sections) to fill in the UNKNOWN rows above.
+1. Share the overnight work (it is on a local branch nobody else can see yet):
+   `git push -u origin prakhar/overnight-mode1`, then on GitHub click "Compare & pull request" into `main` and ask
+   Pratosh to review `control/state_machine.py`. Then `git checkout main && git pull` after merge, and read
+   PROGRESS.md (bci, motors/firmware sections) to fill in the UNKNOWN rows above.
 2. Flicker timing gate (2.6): `python -m interface.flicker --seconds 60` fullscreen, everything else closed
-   (Chrome used ~86% CPU last night). Pass = `dropped=0`. Paste the summary line into PROGRESS.md.
+   (Chrome used ~86% CPU last night). Pass = `mean_fps` 59.5-60.5 AND `dropped=0` AND no red
+   "NO VSYNC" text / "vsync is not pacing" log line. Paste the summary line into PROGRESS.md.
+   Do this BEFORE electrodes go on: Prakhar is the default rider for 3.2 at 6:45, and a bad flicker means bad
+   calibration data.
 3. Dwell bars (2.8): `python -m interface.flicker --fake-status` for 20 s; bars fill, FPS stays 60.
 4. Phone check (2.9): 240 fps video of `python -m interface.flicker --single 12`, count frames per cycle (expect 20 phone
    frames per 12 Hz cycle); repeat for 6.67, 8.57 and 15. Pass = within 2%.
@@ -28,7 +34,7 @@ The two times that never move: **Sat 6:00 pm Mode 2 go/no-go** and **Devpost sub
 | Time | Phase | Who | Done when (gate) |
 | --- | --- | --- | --- |
 | 6:00-6:45 | 3.1 `tools/record.py` | Vani | one labeled file per session in `data/raw/` |
-| 6:00-7:00 | flicker gates above (2.6, 2.8, 2.9) | Prakhar | `dropped=0`, frequencies within 2% |
+| 6:00-6:45 | flicker gates above (2.6, 2.8, 2.9), before electrodes | Prakhar | 59.5-60.5 FPS, `dropped=0`, frequencies within 2% |
 | 6:45-7:45 | 3.2 record two sessions (4 targets, eyes closed, rest) | rider + Vani | two sessions saved |
 | 7:45-9:00 | 3.3 `tools/analyze.py`: FFT vs CCA, windows 1.0/1.5/2.0 s | Vani | table in `docs/calibration.md` |
 | 9:00-9:30 | 3.4 choose frequencies, window, threshold | Prakhar + Vani | update INTERFACES.md first, then protocol.py (test enforces it) |

@@ -47,6 +47,22 @@ def update_frame_stats(stats: FrameStats, frame_s: float, display_hz: int = DISP
     )
 
 
+PACING_CHECK_FRAMES = 60  # judge pacing after about one second of frames
+PACING_TOLERANCE_HZ = 3.0  # mean FPS must be within DISPLAY_HZ +- this
+
+
+def pacing_ok(stats: FrameStats, display_hz: int = DISPLAY_HZ) -> bool | None:
+    """Is the loop really running once per display refresh? None until enough frames to judge.
+
+    Why this exists: pygame can report vsync as on while nothing actually waits for the refresh (seen with
+    SDL's dummy driver, possible on a Mac whose window lost focus). The loop then runs at hundreds of FPS,
+    every arrow flickers at the wrong rate, and 'dropped=0' still looks perfect.
+    """
+    if stats.frames < PACING_CHECK_FRAMES or stats.total_s <= 0:
+        return None
+    return abs(stats.frames / stats.total_s - display_hz) <= PACING_TOLERANCE_HZ
+
+
 def format_frame_summary(stats: FrameStats) -> str:
     fps = stats.frames / stats.total_s if stats.total_s > 0 else 0.0
     return (f"summary: seconds={stats.total_s:.1f} frames={stats.frames} mean_fps={fps:.1f} "

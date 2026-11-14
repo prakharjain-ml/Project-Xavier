@@ -49,3 +49,10 @@ def test_offer_latest_keeps_only_newest():
     offer_latest(q, old)
     offer_latest(q, new)  # must not block or raise on a full queue
     assert q.get_nowait() == new and q.empty()
+
+
+def test_loop_is_paced_near_60_fps_even_without_real_vsync(capsys):
+    # The dummy driver claims vsync but does not pace; the runtime check must fall back to clock pacing.
+    assert main(["--windowed", "--seconds", "2.0"], start_events=["space"]) == 0
+    frames = frames_of(capsys)
+    assert 100 <= frames <= 130, f"{frames} frames in 2 s: loop is not paced at 60 FPS"

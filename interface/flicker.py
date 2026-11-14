@@ -30,6 +30,7 @@ from interface.timing import (
     flicker_schedule,
     format_frame_summary,
     is_on,
+    pacing_ok,
     update_frame_stats,
 )
 from shared.protocol import DISPLAY_HZ, ControlStatus, State, Target, frames_per_cycle
@@ -163,6 +164,16 @@ def draw_overlay(screen: pygame.Surface, font: pygame.font.Font, stats: FrameSta
         screen.blit(banner, banner.get_rect(midtop=(screen.get_width() // 2, 10)))
 
 
+def wait_until(deadline: float) -> float:
+    """Busy-wait to `deadline`, return the next frame's deadline. If we are already late, re-anchor to now
+    instead of rushing several frames to catch up (a burst of fast frames would distort the flicker)."""
+    while time.monotonic() < deadline:
+        pass
+    now = time.monotonic()
+    late = now - deadline > 1 / DISPLAY_HZ
+    return (now if late else deadline) + 1 / DISPLAY_HZ
+
+
 def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames: int | None, has_vsync: bool,
                 deadline: float | None, status_queue: queue.Queue | None) -> FrameStats:
     """The 60 Hz loop. One iteration = one display refresh; frame_index drives every flicker."""
@@ -170,6 +181,7 @@ def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames:
     font = pygame.font.Font(None, 28)
     stats, status = FrameStats(), ControlStatus(State.STOPPED, Target.NONE, 0.0)
     frame_index, show_stats, last_flip = 0, True, None
+    next_frame_t = time.monotonic() + 1 / DISPLAY_HZ
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
@@ -184,15 +196,24 @@ def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames:
             draw_single(screen, frame_index, single_frames)
         if show_stats:
             draw_overlay(screen, font, stats, status)
-        pygame.display.flip()  # with vsync this waits for the next refresh: that is our timebase
         if not has_vsync:
-            clock.tick(DISPLAY_HZ)  # fallback pacing only; not accurate enough for real SSVEP
+            screen.blit(font.render("NO VSYNC: timing approximate", True, ESTOP_COLOR), (10, 40))
+        pygame.display.flip()  # with working vsync this waits for the next refresh: that is our timebase
+        if not has_vsync:
+            # Fallback pacing only (no working vsync). pygame's tick() rounds to whole ms (16 ms -> 62.5 FPS,
+            # 4% fast), so we wait for exact 1/60 s deadlines instead. The flicker phase still comes from
+            # frame_index; this only spaces the frames evenly. Busy-waiting costs CPU, fine for a fallback.
+            next_frame_t = wait_until(next_frame_t)
         now = time.monotonic()
         if last_flip is not None:  # the first frame's duration includes setup, so it is not counted
             frame_s = now - last_flip
             stats = update_frame_stats(stats, frame_s)
             if frame_s > SLOW_FRAME_S:
                 log.warning("slow frame %d: %.1f ms", frame_index, frame_s * 1000)
+            if has_vsync and pacing_ok(stats) is False:  # vsync claimed but frames are not ~60 per second
+                log.error("vsync is not pacing frames (%.0f FPS): falling back to clock pacing; "
+                          "timing is approximate, do not use this run for the gate", stats.frames / stats.total_s)
+                has_vsync, stats = False, FrameStats()  # restart the stats so the summary reflects paced frames
         last_flip = now
         frame_index += 1
         if deadline is not None and now >= deadline:

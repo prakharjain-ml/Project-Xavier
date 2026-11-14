@@ -46,9 +46,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
   hi/lo, VBATT PA4). Prebuilt `e235_single_uart.bin`, `e235_master.bin`, `e235_slave.bin` + Windows flash scripts in
   `firmware/hoverboard/flash_tools/`; patch to rebuild in `firmware/hoverboard/firmware_src/`.
   `firmware/bridge/bridge.ino` follows the INTERFACES.md laptop protocol (C/S in, D out, 200 ms watchdog, obstacle stop, clamp 150).
-- In progress (file:function, state): master board ready for `e235_single_uart.bin` + ESP32 test; slave board not unlocked yet.
-- Next step: flash master with `7_flash_firmware.bat` option 1, upload `bridge.ino`, beep-test which round pad is PB6/PB7,
-  run `firmware/hoverboard/tools/bridge_bench_test.py` wheels-up. Then slave: unlock, `hall_watch.py`, flash option 3, master option 2.
+- In progress (file:function, state): the USART0 round pads are dead (R10/R11 not fitted), so the setup is now
+  `e235_single_usart1.bin` on BOTH boards, each driven by the ESP32 through its own 4-pin master-slave plug
+  (`bridge.ino` `DUAL_SINGLE 1`: left board on GPIO17/18, right board on GPIO15/16). Slave board not unlocked yet.
+- Next step: beep-test the master's 4-pin plug (PA2 = chip pin 12, PA3 = pin 13, GND, VCC), flash option 1, upload
+  `bridge.ino`, run `firmware/hoverboard/tools/bridge_bench_test.py` wheels-up. Then slave: unlock, test03, option 1.
 - Known bugs: **`docs/INTERFACES.md` "ESP32 to hoverboard" section is wrong for our firmware** (real: '/' + speed + steer
   + 2 state bytes + CRC16, 9 bytes, 19200 baud; see `firmware/README.md`) - docs owner please update.
   SELF_HOLD PB2 and CURRENT_DC PA6 unverified (bridge the power button for now). VBATT reads ~9% high.

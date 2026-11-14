@@ -39,8 +39,8 @@ flashing and wiring the hoverboard mainboards.
 | Self-hold (keeps power on) | PB2 | NOT verified (from 2-3-1 / 2-3-2). Until verified: bridge or clamp the power button |
 | Power button | - | not used (`DISABLE_BUTTON`) |
 | LEDs, buzzer | - | not mapped (PF1 is a hall here, so the 2-3-x LED pins do not apply) |
-| ESP32 UART (REMOTE_USART 0) | PB6 = TX (chip pin 42), PB7 = RX (pin 43) | pins from the E230 template; which of the 4 round pads is which must be beep-tested |
-| Master-slave cable (USART1) | PA2 / PA3 | from the E230 template, original 4-pin cable |
+| USART0 round pads "GND / ? / TX / RX" next to the white plugs | PB6 / PB7 | **NOT CONNECTED**: series resistors R10/R11 are not fitted (pads do not beep to chip pins 42/43). Unusable without soldering |
+| **ESP32 link = 4-pin master-slave plug (USART1)** | **PA2 = board TX (chip pin 12), PA3 = board RX (chip pin 13)** | from the E230 template; beep-test which plug pin is PA2 / PA3 / GND, the 4th is VCC (do not use) |
 | **Never connect** | VCC / 15 V pin of any header | to the ESP32 or ST-Link |
 
 The slave board is very likely the same design; confirm its hall pins with `hall_watch.py` before flashing `e235_slave.bin`.
@@ -50,7 +50,7 @@ This replaces the provisional "ESP32 to hoverboard" section of `docs/INTERFACES.
 EFeru FOC firmware: 0xABCD, 115200 baud, 8 bytes). **`docs/INTERFACES.md` still needs updating by its owner.**
 
 - RoboDurden Hoverboard-Firmware-Hack-Gen2.x-GD32, `REMOTE_UART`, `Src/remoteUart.c`
-- **19200 baud** 8N1, 3.3 V logic, on the master board's PB6 (TX) / PB7 (RX)
+- **19200 baud** 8N1, 3.3 V logic, on USART1 = the 4-pin master-slave plug (PA2 TX / PA3 RX) of each board
 - Command frame, 9 bytes, little-endian, packed: `uint8 '/'`, `int16 speed`, `int16 steer`, `uint8 wStateMaster`,
   `uint8 wStateSlave`, `uint16 crc` with CRC16-CCITT (poly 0x1021, init 0) over the first 7 bytes.
   Example: speed=100, steer=0 -> `2F 64 00 00 00 00 00 A6 BD`
@@ -63,9 +63,10 @@ EFeru FOC firmware: 0xABCD, 115200 baud, 8 bytes). **`docs/INTERFACES.md` still 
 ## Firmware builds (prebuilt in `hoverboard/flash_tools/`)
 | File | Board | What it does |
 | --- | --- | --- |
-| `e235_single_uart.bin` | master, alone | `SINGLE` + `REMOTE_UART`: one board driven by the ESP32. For testing before the slave is done |
-| `e235_master.bin` | master | `MASTER` + `REMOTE_UART`: ESP32 commands in, forwards the second wheel's command to the slave over the cable |
-| `e235_slave.bin` | slave | `SLAVE`: takes its commands from the master over the cable |
+| **`e235_single_usart1.bin`** | **both boards** | **Used setup.** `SINGLE` + `REMOTE_UART` on USART1 (4-pin plug). Each board = one wheel, own ESP32 UART, no soldering |
+| `e235_single_uart.bin` | one board | `SINGLE` + `REMOTE_UART` on USART0 (PB6/PB7 pads, not connected on YK187) |
+| `e235_master.bin` | master | `MASTER` + `REMOTE_UART` on USART0 pads + slave over the cable (needs R10/R11 bridged) |
+| `e235_slave.bin` | slave | `SLAVE` for `e235_master.bin` |
 | `motor_tests/test01-12.bin` | any | `REMOTE_DUMMY` slow zigzag, all 6 hall orders x 2 hi/lo orders (test03 = right one for the master) |
 | `autodetect_e235_irc.bin` | any | RoboDurden autodetect over RTT (internal clock). Works, but the RTT console was unreliable on charger power |
 
@@ -111,8 +112,10 @@ for long debug sessions.
 ## ESP32 bridge
 - Arduino IDE 2 + "esp32 by Espressif Systems" board package; board **ESP32S3 Dev Module**.
 - If you plug into the S3's native USB port, set **Tools -> USB CDC On Boot -> Enabled** so `Serial` is the USB port.
-- Wiring: GPIO17 -> board PB7, GPIO18 <- board PB6, GND - GND. HC-SR04: TRIG GPIO4, ECHO GPIO5 through a
-  1k/2k divider (ECHO is 5 V), VCC 5 V, GND.
+- Wiring (`DUAL_SINGLE 1`, the default): unplug the original cable between the boards, then on each board's 4-pin
+  master-slave plug: LEFT board PA3 <- ESP32 GPIO17, PA2 -> ESP32 GPIO18, GND; RIGHT board PA3 <- GPIO15,
+  PA2 -> GPIO16, GND. Never the VCC pin. Set `LEFT_SIGN` / `RIGHT_SIGN` after a wheels-up test.
+- HC-SR04: TRIG GPIO4, ECHO GPIO5 through a 1k/2k divider (ECHO is 5 V), VCC 5 V, GND.
 - Laptop protocol: `docs/INTERFACES.md` ("Laptop to ESP32 bridge"). Bench test: `python firmware/hoverboard/tools/bridge_bench_test.py <port>`.
 
 ## Done when

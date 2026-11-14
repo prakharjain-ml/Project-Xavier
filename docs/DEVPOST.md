@@ -14,67 +14,61 @@ clench, read by an OpenBCI headset. Every unclear signal means stop.
 
 ## Inspiration
 A power wheelchair assumes a hand that can push a joystick. A high spinal cord injury or ALS can take that hand
-away and leave the eyes and the jaw. The alternatives we read about, like sip-and-puff straws and head arrays,
-still make the person steer every turn, one small command at a time.
+and leave the eyes and the jaw. Sip-and-puff straws and head arrays still make the person steer every turn.
 
-We named it after Charles Xavier, the X-Men professor who gets around by intent instead of hands. He has Cerebro.
-We have an OpenBCI board and a hoverboard we re-flashed ourselves.
+We named it after Charles Xavier, the X-Men professor who gets around by intent, not hands. He had Cerebro. We
+have an OpenBCI board and a hoverboard we re-flashed ourselves.
 
 ## What it does
-Xavier lets someone choose where to go with their eyes and confirm it with their jaw.
+Xavier lets someone choose a direction with their eyes and confirm it with their jaw.
 
-1. A webcam on the laptop tracks the rider's gaze. Four arrows fill the screen.
-2. The rider holds their gaze on an arrow. After 1.5 seconds the chair starts moving that way.
-3. It keeps moving only while they keep looking. Looking at the centre or away stops it on the next 50 ms tick.
-4. In object mode, the phone camera on the back of the laptop boxes chairs, tables and people. The box under the
-   rider's gaze turns yellow, and a jaw clench, read by an OpenBCI electrode behind the ear, turns it green.
-   [VERIFY: keep step 4 only if the clench confirm works on Vani at the table.]
+1. A webcam tracks the rider's gaze across four arrows on the laptop.
+2. Holding the gaze on an arrow for 1.5 s starts the chair that way.
+3. It moves only while they keep looking. Looking at the centre or away stops it within 50 ms.
+4. In object mode, the phone on the back of the laptop boxes chairs and people. The box under the gaze turns
+   yellow; a jaw clench, read by an OpenBCI electrode behind the ear, turns it green. [VERIFY: keep only if it
+   works on Vani at the table.]
 
-[VERIFY: say plainly whether the wheels in the demo carry a rider, run on a stand, or are bench-tested unloaded.]
+[VERIFY: say whether the wheels carry a rider, run on a stand, or are bench-tested unloaded.]
 
 ## How we built it
-Follow one choice from the eye to the wheel. EyeTrax, an open-source webcam gaze library, runs as its own process
-and sends a gaze point for every camera frame. YOLO and ByteTrack box objects in the phone feed. The OpenBCI Cyton
-streams to the laptop through BrainFlow, and our detector measures 40 to 200 Hz muscle energy every 0.1 s,
-skipping the bands around 60 Hz mains hum. A clench counts only if it holds for 0.3 s, and calibration refuses to
-start if a clench isn't at least three times stronger than rest.
+EyeTrax, an open-source gaze library, sends a gaze point for every webcam frame. YOLO and ByteTrack box objects in
+the phone feed. BrainFlow streams the Cyton to the laptop, and our detector measures 40 to 200 Hz muscle energy
+every 0.1 s, skipping mains hum. A clench counts only after 0.3 s, and calibration refuses to start unless a clench
+is at least three times stronger than rest.
 
-The gaze and the clench feed a state machine that runs 20 times a second, and its default answer is stop. It sends
-wheel speeds to an ESP32-S3 every 50 ms. The ESP32 turns them into 9-byte frames for the hoverboard's two boards,
-which we flashed with the open-source RoboDurden firmware. If the laptop goes quiet for 200 ms, the ESP32 stops the
-wheels on its own.
+A state machine running 20 times a second turns those signals into wheel speeds, and its default answer is stop.
+An ESP32-S3 converts the speeds into 9-byte frames for the hoverboard's two boards, which run the open-source
+RoboDurden firmware we flashed. If the laptop goes quiet for 200 ms, the ESP32 stops the wheels on its own.
 
-The decision that shaped the build: gaze alone selects whatever you happen to look at (the Midas-touch problem).
-So gaze picks, and a separate, deliberate signal confirms.
+One decision shaped the build: gaze alone selects whatever you glance at (the Midas-touch problem). So gaze picks,
+and a deliberate clench confirms.
 
 ## Challenges we ran into
-The hoverboard was dead for the first [VERIFY: hours] hours. The board's round TX/RX pads and its 4-pin plug turned
-out not to connect to the chip. The serial link was the 5-pin plug, and even then every byte came out garbled
-because our ground wire wasn't a real ground. The ESP32 was reading mains hum. A wire to the battery's negative
-fixed it, and the left wheel finally answered our laptop. [VERIFY: the time, and the right wheel.]
+The hoverboard was dead for [VERIFY: hours] hours. Its TX/RX pads and 4-pin plug weren't connected to the chip;
+the serial link was the 5-pin plug. Even then every byte was garbled, because our ground wasn't a real ground and
+the ESP32 was reading mains hum. A wire to the battery's negative fixed it, and the left wheel answered our laptop.
 
-Our first 15 Hz recording looked like brain data. It wasn't. There was no peak at 15 Hz, and the same peaks at
-9.75, 19.5 and 29.25 Hz showed up on every channel, including unplugged ones. Two channels were identical. We
-rewired the electrodes and now check the signal before every session. [VERIFY: what fixed it on the board.]
+Our first 15 Hz recording looked like brain data. There was no peak at 15 Hz. The same peaks at 9.75, 19.5 and
+29.25 Hz sat on every channel, unplugged ones included, and two channels were identical. We rewired the electrodes
+and now check the signal before every session. [VERIFY: what fixed it.]
 
 ## Accomplishments that we're proud of
-- Commands from our laptop drove the hoverboard's left wheel forward, backward and in a turn, and stopped it when
-  the laptop went silent. [VERIFY: both wheels; loaded or bench.]
-- With eyes only, a teammate reached all four directions: 11 of 23 gaze selections held long enough to move (motor
-  commands on a test port).
-- [VERIFY: "The clench read [N]x stronger than rest on Vani, and confirmed [X] of [Y] clenches with [Z] false
-  triggers while talking."]
+- Our laptop drove the hoverboard's left wheel forward, backward and in a turn, and the wheel stopped when the
+  laptop went silent. [VERIFY: both wheels; loaded or bench.]
+- Eyes only, a teammate reached all four directions: 11 of 23 gaze selections held long enough to move (test port).
+- [VERIFY: "On Vani, a clench read [N]x stronger than rest; [X] of [Y] clenches confirmed, [Z] false triggers while
+  talking."]
 
 ## What we learned
-- A spectrum full of peaks can look like success. Comparing against unplugged channels showed us it was noise.
-- A missing ground wire cost us more hours than any algorithm.
-- [VERIFY: one lesson from each teammate, in their own words.]
+- A spectrum full of peaks can look like success. Unplugged channels showed us it was noise.
+- One missing ground wire cost us more hours than any algorithm.
+- [VERIFY: one lesson per teammate, in their words.]
 
 ## What's next
-- Steer with brain signals alone. Our flicker screen is built and frame-timed; the EEG decoding still has to pass on
-  a real head.
+- Steer with brain signals alone. The flicker screen is built; EEG decoding still has to pass on a real head.
 - Drive to the chosen object. The path planner avoids obstacles in simulation; next it runs on the chair.
-- Test with people who use power wheelchairs. Everything we know comes from our own heads.
+- Test with people who use power wheelchairs. So far we've only tested on ourselves.
 
 **Built with:** python, opencv, ultralytics-yolo, bytetrack, eyetrax, mediapipe, openbci-cyton, brainflow, numpy,
 scipy, pygame, esp32-s3, arduino, gd32, robodurden-firmware, openocd [VERIFY: add gemini only if the demo uses it]

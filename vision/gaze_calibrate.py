@@ -145,6 +145,36 @@ def save_raw(calibration_path: str, raw, points_log) -> None:
     print(f"raw data saved to {out}")
 
 
+def run_calibration(cv2, source: FaceLandmarkSource, out: str) -> float | None:
+    """Full calibration in the current window: wait for SPACE, 9 dots, fit, save, 4-region check.
+    Returns overall accuracy (0-1), or None if the rider cancelled or no face was seen."""
+    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    if not wait_for_space(cv2, source):
+        return None
+    raw = collect_calibration(cv2, source)
+    if not raw:
+        print("calibration cancelled or no face seen")
+        return None
+    samples, open_ratio = drop_blinks(raw)
+    # Pick the map that predicts unseen dots best (fit on 8 dots, test on the 9th, for every dot).
+    errors = cross_validate(samples, open_ratio)
+    degree = min(errors, key=errors.get)
+    print(f"leave-one-dot-out error: straight={errors[1]:.3f} curved={errors[2]:.3f} (screen fraction) "
+          f"-> using {'straight' if degree == 1 else 'curved'}")
+    cal = fit_calibration(samples, open_ratio, degree)
+    save_calibration(cal, out)
+    print(f"saved calibration to {out} ({len(samples)} samples, open ratio {open_ratio:.2f})")
+    points_log: list = []
+    picks = validate(cv2, source, cal, points_log)
+    save_raw(out, raw, points_log)
+    if picks is None:
+        return None
+    per, overall = region_accuracy(picks)
+    print(format_summary(len(samples), per, overall))
+    return overall
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Calibrate webcam gaze and measure its accuracy.")
     parser.add_argument("--eye-camera", type=int, default=0, help="camera index that sees the rider's face")
@@ -153,32 +183,8 @@ def main(argv: list[str] | None = None) -> int:
     import cv2
 
     source = FaceLandmarkSource(args.eye_camera)
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     try:
-        if not wait_for_space(cv2, source):
-            return 1
-        raw = collect_calibration(cv2, source)
-        if not raw:
-            print("calibration cancelled or no face seen")
-            return 1
-        samples, open_ratio = drop_blinks(raw)
-        # Pick the map that predicts unseen dots best (fit on 8 dots, test on the 9th, for every dot).
-        errors = cross_validate(samples, open_ratio)
-        degree = min(errors, key=errors.get)
-        print(f"leave-one-dot-out error: straight={errors[1]:.3f} curved={errors[2]:.3f} (screen fraction) "
-              f"-> using {'straight' if degree == 1 else 'curved'}")
-        cal = fit_calibration(samples, open_ratio, degree)
-        save_calibration(cal, args.out)
-        print(f"saved calibration to {args.out} ({len(samples)} samples, open ratio {open_ratio:.2f})")
-        points_log: list = []
-        picks = validate(cv2, source, cal, points_log)
-        save_raw(args.out, raw, points_log)
-        if picks is None:
-            return 1
-        per, overall = region_accuracy(picks)
-        print(format_summary(len(samples), per, overall))
-        return 0
+        return 0 if run_calibration(cv2, source, args.out) is not None else 1
     finally:
         source.close()
         cv2.destroyAllWindows()

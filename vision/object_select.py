@@ -46,6 +46,7 @@ WINDOW = "look at an object to choose it"
 CANVAS_W, CANVAS_H = 1280, 800  # same canvas as the calibration screen, stretched to full screen
 MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the screen wide and tall
 SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
+MIN_ACCURACY = 0.85  # calibration check must reach this before selecting objects (one retry)
 RED, YELLOW, GREEN, GREY, CURSOR = (0, 0, 255), (0, 220, 255), (0, 220, 0), (160, 160, 160), (255, 120, 0)
 
 
@@ -197,6 +198,29 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     return confirmations
 
 
+def calibrate_now(cv2, eye_camera: int, out: str) -> bool:
+    """Calibrate in the rider's CURRENT position: a calibration from another seat or posture drifted by up to
+    0.45 of the screen in a live test. Retries once below MIN_ACCURACY; returns False only if cancelled."""
+    from vision.gaze_calibrate import run_calibration
+    from vision.gaze_tracker import FaceLandmarkSource
+
+    source = FaceLandmarkSource(eye_camera)
+    try:
+        for attempt in (1, 2):
+            accuracy = run_calibration(cv2, source, out)
+            if accuracy is None:
+                return False
+            if accuracy >= MIN_ACCURACY:
+                return True
+            log.warning("calibration accuracy %.0f%% < %.0f%% (attempt %d): sit still, head level, retrying",
+                        100 * accuracy, 100 * MIN_ACCURACY, attempt)
+        log.warning("continuing with the lower-accuracy calibration; expect more re-centring")
+        return True
+    finally:
+        source.close()  # free the camera for the tracker program
+        cv2.destroyAllWindows()
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description="Choose a real object by looking at it.")
@@ -206,8 +230,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hfov", type=float, default=load_hfov(), help="calibrated if data/raw/camera_calibration.json exists")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seconds", type=float, default=None)
+    parser.add_argument("--skip-calibration", action="store_true",
+                        help="reuse the saved calibration (only if you have not moved since)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    if not os.path.exists(args.calibration):
+    if args.skip_calibration and not os.path.exists(args.calibration):
         log.error("no gaze calibration at %s: run `python -m vision.gaze_calibrate` first", args.calibration)
         return 2
     import cv2
@@ -229,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         args.eye_camera = eye if args.eye_camera == "auto" else int(args.eye_camera)
         args.source = str(forward) if args.source == "auto" else args.source
         log.info("eye camera = %s, forward camera = %s", args.eye_camera, args.source)
+    if not args.skip_calibration and not calibrate_now(cv2, int(args.eye_camera), args.calibration):
+        return 1
     reader = LatestFrameReader(parse_source(args.source), opener=open_capture)
     reader.start()
     process, gaze_queue, gaze_stop = start_gaze_tracker(int(args.eye_camera), args.calibration)

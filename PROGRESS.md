@@ -40,6 +40,23 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, morning - Claude Code (Opus 5.5), for Keshav
+- Done: Master hoverboard board (YK187, GD32E235) unlocked over SWD, factory firmware erased, RoboDurden Gen2.x-GD32
+  firmware running. Pin map in `firmware/README.md` (halls PF1/PA0/PC15 found by hand-turning the wheel, BLDC normal
+  hi/lo, VBATT PA4). Prebuilt `e235_single_uart.bin`, `e235_master.bin`, `e235_slave.bin` + Windows flash scripts in
+  `firmware/hoverboard/flash_tools/`; patch to rebuild in `firmware/hoverboard/firmware_src/`.
+  `firmware/bridge/bridge.ino` follows the INTERFACES.md laptop protocol (C/S in, D out, 200 ms watchdog, obstacle stop, clamp 150).
+- In progress (file:function, state): master board ready for `e235_single_uart.bin` + ESP32 test; slave board not unlocked yet.
+- Next step: flash master with `7_flash_firmware.bat` option 1, upload `bridge.ino`, beep-test which round pad is PB6/PB7,
+  run `firmware/hoverboard/tools/bridge_bench_test.py` wheels-up. Then slave: unlock, `hall_watch.py`, flash option 3, master option 2.
+- Known bugs: **`docs/INTERFACES.md` "ESP32 to hoverboard" section is wrong for our firmware** (real: '/' + speed + steer
+  + 2 state bytes + CRC16, 9 bytes, 19200 baud; see `firmware/README.md`) - docs owner please update.
+  SELF_HOLD PB2 and CURRENT_DC PA6 unverified (bridge the power button for now). VBATT reads ~9% high.
+  SWD over hand-held jumpers is glitchy on charger power. `bridge.ino` not compiled yet (human step).
+- Evidence (command + result): `7_flash_firmware.bat`-equivalent flashes -> `** Verified OK **`; test03 zigzag spins the
+  wheel smoothly (Keshav, wheels up); `hall_watch.py` -> `PA0: 211, PF1: 209, PC15: 205` toggles, sequence
+  `010 011 001 101 100 110`; `git apply --check robodurden-c63b29a.patch` on a fresh c63b29a checkout -> clean.
+
 ### [time] - [model/agent]
 - Done:
 - In progress (file:function, state):

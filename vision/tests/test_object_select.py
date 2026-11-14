@@ -1,12 +1,22 @@
 """Gaze-on-objects selection logic (vision/object_select.py). Pure: no camera, no window."""
 
+import inspect
+import logging
+import math
+import queue
+import time
+import types
+
+import numpy as np
 import pytest
 
-from shared.protocol import DWELL_S
+from motors.mock_serial import MockSerial
+from shared.protocol import DWELL_S, STALE_INTENT_S
 from vision.detect_track import Track
 from vision.gaze import GazeSample
 from vision.object_select import (
     MIN_HIT_SIZE,
+    MIN_LOOK_S,
     Selection,
     corrected_point,
     hit_boxes,
@@ -159,6 +169,9 @@ def test_confirm_event_sources():
         def take(self):
             return self.fired
 
+        def alive(self):
+            return True
+
         def inject_fake_clench(self, seconds=0.6):
             self.injected = True
 
@@ -223,6 +236,8 @@ def test_end_to_end_look_confirm_hold_then_drive_lines_reach_the_port(monkeypatc
         if calls["n"] == 60:  # press J (confirm) after ~0.6 s of looking
             calls["j_at"] = time.monotonic()
             return ord("j")
+        if sum(ln.startswith("C,") for ln in port.lines()) >= 5:
+            return ord("q")  # seen enough driving: quit, so a slow (loaded) machine only makes the test longer
         return 255
 
     fake_cv2 = types.SimpleNamespace(**{n: getattr(real_cv2, n) for n in dir(real_cv2) if not n.startswith("_")})
@@ -241,7 +256,7 @@ def test_end_to_end_look_confirm_hold_then_drive_lines_reach_the_port(monkeypatc
     driver.start()
     try:
         confirmations = osel.run(fake_cv2, Frames(), model=None, classes=None, gaze_queue=GazeAtChair(), hfov=85.5,
-                                 device="cpu", seconds=3.5, confirm_mode="key", driver=driver)
+                                 device="cpu", seconds=15.0, confirm_mode="key", driver=driver)
     finally:
         driver.stop()
     assert any("CONFIRMED chair #4" in c for c in confirmations)
@@ -255,3 +270,423 @@ def test_end_to_end_look_confirm_hold_then_drive_lines_reach_the_port(monkeypatc
     # The safety state machine is in the path: wheels move only after the 1.5 s hold that follows the confirm.
     assert port.times[first_drive] - calls["j_at"] >= HOLD - 0.15
     assert all(ln.startswith("S,") for ln in port.lines()[-3:])  # explicit stop when the session ends
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Drive path (`object_select --drive`): regression tests for the safety audit, docs/PROJECT_CONTEXT.md findings
+# 1 (frozen camera), 3 (operator keys), 6 (obstacles the planner never saw) and 14 (arrival repeated forever).
+#
+# Same recipe as the end-to-end test above: the real selection, planner, safety state machine and MotorDriver
+# write into MockSerial; only the camera, YOLO, the eye tracker and the OpenCV window are faked.
+# Each test is a SCRIPT of events ("once the wheels turn, press SPACE"), not a list of fixed times, and it quits
+# by itself as soon as it has seen enough. A slow, loaded machine only makes a test take longer.
+
+NO_KEY, SPACE, QUIT = 255, 32, ord("q")
+CENTRE, EMPTY_CORNER = (0.5, 0.5), (0.05, 0.05)  # gaze points (0-1 screen): on the chair / on nothing
+CHAIR = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)  # dead ahead, far away
+FRAME_W, FRAME_H = 1920, 1080
+LOOP_S = 0.01  # the fake waitKey sleeps this long, so the loop runs at most 100 times a second
+WAIT_CAP_S = 15.0  # a scripted step that has not happened after this long fails the test with a clear message
+# A stop decided in the loop reaches the port on the driver's next tick (50 ms). Allow ten ticks on a loaded machine.
+SETTLE_S = 0.5
+
+
+class TimedPort(MockSerial):
+    """MockSerial that also remembers when each line was written (the driver thread is the only writer)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.times: list[float] = []
+
+    def write(self, data: bytes) -> int:
+        written = super().write(data)
+        self.times.append(time.monotonic())
+        return written
+
+
+class DriveSession:
+    """One scripted drive session. It IS the fake forward camera (latest) and the fake eye tracker (get_nowait),
+    and it records what a test may look at: the serial port, the status text on screen and the log."""
+
+    def __init__(self) -> None:
+        self.port = TimedPort()
+        self.gaze_point: tuple[float, float] | None = CENTRE  # where the rider looks right now
+        self.camera_live = True
+        self.frozen_frame_t: float | None = None  # timestamp of the last frame before the camera froze
+        self.statuses: list[tuple[float, str]] = []  # (time, status text handed to draw())
+        self.log: list[str] = []  # messages logged by vision.object_select
+        self.marks: dict[str, float] = {}  # named moments set by the script
+        self.confirmations: list[str] = []  # what run() returned
+        self._frame = (np.zeros((FRAME_H, FRAME_W, 3), np.uint8), time.monotonic())
+        self._gaze_flip = False
+
+    # ---- fakes the program reads from
+    def latest(self) -> tuple[np.ndarray, float]:
+        """Like LatestFrameReader.latest(): a live camera gives a new arrival time every call; a frozen one keeps
+        returning the last frame with its OLD arrival time."""
+        if self.camera_live:
+            self._frame = (self._frame[0], time.monotonic())
+        return self._frame
+
+    def get_nowait(self) -> GazeSample:
+        """A fresh gaze sample on every other call (the caller drains the queue until it is empty)."""
+        self._gaze_flip = not self._gaze_flip
+        if not self._gaze_flip:
+            raise queue.Empty
+        return GazeSample(self.gaze_point, False, self.gaze_point is not None, time.monotonic())
+
+    # ---- what a script can do
+    def freeze_camera(self) -> None:
+        self.camera_live, self.frozen_frame_t = False, self._frame[1]
+
+    def mark(self, name: str) -> None:
+        self.marks[name] = time.monotonic()
+
+    def wait(self, seconds: float):
+        """Script step: press nothing for this long."""
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            yield NO_KEY
+
+    def until(self, condition, what: str, key: int = NO_KEY):
+        """Script step: press `key` (default: nothing) once per loop pass until condition() is true."""
+        deadline = time.monotonic() + WAIT_CAP_S
+        while not condition():
+            assert time.monotonic() < deadline, f"gave up after {WAIT_CAP_S:.0f} s waiting for: {what}"
+            yield key
+
+    # ---- what a script or a test can see
+    def moving_lines(self, after: float = -math.inf, before: float = math.inf) -> list[str]:
+        """Serial lines that turn the wheels ("C,seq,left,right"; zero speeds are always sent as "S,seq")."""
+        return [line for t, line in zip(self.port.times, self.port.lines())
+                if line.startswith("C,") and after < t < before]
+
+    def is_moving(self) -> bool:
+        return bool(self.moving_lines())
+
+    def logged(self, word: str) -> int:
+        return sum(word in message for message in self.log)
+
+
+def run_drive_session(monkeypatch, tracks: list[Track], script, confirm_mode: str = "key") -> DriveSession:
+    """Run the real osel.run() with a MotorDriver on MockSerial. `script(session)` is a generator: every value it
+    yields is the key pressed in one loop pass; when it ends, Q is pressed and the session closes."""
+    import cv2 as real_cv2
+
+    import vision.object_select as osel
+    from motors.driver import MotorDriver
+
+    session = DriveSession()
+    monkeypatch.setattr(osel, "detect", lambda *a, **k: list(tracks))
+    real_draw = osel.draw
+
+    def draw_and_note_status(*args, **kwargs):  # found by parameter name, so draw() may gain parameters
+        status = inspect.signature(real_draw).bind(*args, **kwargs).arguments["status"]
+        session.statuses.append((time.monotonic(), status))
+        return real_draw(*args, **kwargs)
+
+    monkeypatch.setattr(osel, "draw", draw_and_note_status)
+    keys = script(session)
+
+    def wait_key(_ms: int) -> int:
+        time.sleep(LOOP_S)
+        return next(keys, QUIT)
+
+    fake_cv2 = types.SimpleNamespace(**{n: getattr(real_cv2, n) for n in dir(real_cv2) if not n.startswith("_")})
+    fake_cv2.imshow, fake_cv2.waitKey = (lambda *a: None), wait_key
+
+    class Remember(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            session.log.append(record.getMessage())
+
+    handler, old_level = Remember(), osel.log.level
+    osel.log.addHandler(handler)
+    osel.log.setLevel(logging.INFO)
+    driver = MotorDriver(lambda: session.port)
+    driver.start()
+    try:
+        session.confirmations = osel.run(fake_cv2, session, model=None, classes=None, gaze_queue=session,
+                                         hfov=85.5, device="cpu", seconds=4 * WAIT_CAP_S,
+                                         confirm_mode=confirm_mode, driver=driver)
+    finally:
+        driver.stop()
+        osel.log.removeHandler(handler)
+        osel.log.setLevel(old_level)
+    return session
+
+
+def confirm_with_j_then_hold_until_moving(s: DriveSession):
+    """Script steps shared by the tests: look at the chair, confirm with J, keep looking until the wheels turn."""
+    yield from s.wait(MIN_LOOK_S + 0.2)  # a short look first, or the J press is ignored
+    yield from s.until(lambda: s.logged("CONFIRMED"), "the J key to confirm the chair", key=ord("j"))
+    yield from s.until(s.is_moving, "the wheels to start after the 1.5 s hold")
+
+
+def test_frozen_forward_camera_stops_the_chair_and_the_screen_says_so(monkeypatch):
+    """Audit finding 1: the camera froze, the rider kept looking at the frozen picture, the chair kept driving."""
+    # Arrange: the chair is driving toward the confirmed object when the camera stops delivering new frames.
+    def script(s: DriveSession):
+        yield from confirm_with_j_then_hold_until_moving(s)
+        s.freeze_camera()
+        yield from s.wait(STALE_INTENT_S + 1.5)  # the rider keeps looking at the frozen picture
+
+    # Act
+    s = run_drive_session(monkeypatch, [CHAIR], script)
+
+    # Assert: from the moment the newest frame is older than the stale limit, nothing moves and the screen says why.
+    stale_from = s.frozen_frame_t + STALE_INTENT_S
+    assert s.moving_lines(before=stale_from), "the chair never drove, so this run proves nothing"
+    assert s.moving_lines(after=stale_from + SETTLE_S) == []
+    final_status = s.statuses[-1][1]  # drawn 1.5 s after the frame went stale
+    assert "CAMERA FROZEN" in final_status and "STOPPED" in final_status
+
+
+def test_space_latches_an_emergency_stop_until_r_rearms(monkeypatch):
+    """Audit finding 3: SPACE did nothing while driving and E_STOP could not be reached in this program."""
+    # Arrange: SPACE while the wheels turn; the rider keeps looking at the chair the whole time; later R.
+    def script(s: DriveSession):
+        yield from confirm_with_j_then_hold_until_moving(s)
+        s.mark("space")
+        yield SPACE
+        yield from s.wait(DWELL_S + 1.0)  # without a LATCHED stop the chair would start again after the 1.5 s hold
+        s.mark("rearm")
+        yield ord("r")
+        yield from s.until(lambda: s.moving_lines(after=s.marks["rearm"]), "the chair to move again after re-arm")
+
+    # Act
+    s = run_drive_session(monkeypatch, [CHAIR], script)
+
+    # Assert: stopped and E_STOP on screen from SPACE until R; after R a fresh 1.5 s hold, then it moves again.
+    space_t, rearm_t = s.marks["space"], s.marks["rearm"]
+    assert s.moving_lines(after=space_t + SETTLE_S, before=rearm_t) == []
+    latched = [text for t, text in s.statuses if space_t < t < rearm_t]
+    assert latched and all("E_STOP" in text for text in latched)
+    first_move_again = next(t for t, line in zip(s.port.times, s.port.lines()) if line.startswith("C,") and t > rearm_t)
+    assert first_move_again - rearm_t >= DWELL_S - 0.15
+
+
+def test_x_cancels_the_destination_in_dwell_mode_until_the_gaze_leaves_and_comes_back(monkeypatch):
+    """Audit finding 3: in dwell mode X cleared the confirmation and the same loop pass confirmed it again."""
+    # Arrange: dwell mode, the chair is driving, X is pressed, the rider keeps staring at the same chair.
+    def script(s: DriveSession):
+        yield from s.until(s.is_moving, "the wheels to start (1.5 s dwell to confirm, then the 1.5 s hold)")
+        s.mark("x")
+        yield ord("x")
+        yield from s.wait(DWELL_S + 1.0)  # longer than a full dwell: a re-confirmation would show up here
+        s.marks["confirmed_while_staring"] = s.logged("CONFIRMED")
+        s.gaze_point = EMPTY_CORNER  # the gaze leaves the chair ...
+        yield from s.wait(0.3)
+        s.gaze_point = CENTRE  # ... and comes back: now the chair may be chosen again
+        yield from s.until(lambda: s.logged("CONFIRMED") >= 2, "the chair to be confirmed again after looking away")
+
+    # Act
+    s = run_drive_session(monkeypatch, [CHAIR], script, confirm_mode="dwell")
+
+    # Assert
+    assert s.moving_lines(after=s.marks["x"] + SETTLE_S) == []  # X stopped the chair and it stayed stopped
+    assert s.marks["confirmed_while_staring"] == 1  # staring at the cancelled chair did not confirm it again
+    assert sum("CONFIRMED" in line for line in s.confirmations) == 2
+
+
+def test_arrival_in_dwell_mode_is_reported_once_and_the_chair_stays_stopped(monkeypatch):
+    """Audit finding 14: an object already within reach was confirmed and 'arrived' on every loop pass."""
+    from control.navigation import ARRIVE_M
+
+    # Arrange: the object is already closer than the arrival distance; the rider never stops looking at it.
+    near = Track(id=4, label="potted plant", conf=0.9, bbox=CHAIR.bbox, distance_m=ARRIVE_M / 2)
+
+    def script(s: DriveSession):
+        yield from s.until(lambda: s.logged("ARRIVED"), "the arrival to be reported")
+        yield from s.wait(1.0)  # the bug logged dozens more CONFIRMED / ARRIVED pairs in a second like this
+
+    # Act
+    s = run_drive_session(monkeypatch, [near], script, confirm_mode="dwell")
+
+    # Assert
+    assert [line.split()[0] for line in s.confirmations] == ["CONFIRMED", "ARRIVED"]
+    assert s.moving_lines() == []
+
+
+def test_planner_gets_every_tracked_object_as_an_obstacle_not_only_the_boxes_on_screen(monkeypatch):
+    """Audit finding 6: an object next to the target is not shown as a box (boxes must stay apart), and so the
+    planner was never told about it."""
+    import vision.object_select as osel
+
+    # Arrange: a person standing right beside the chair. Their box is 10 px from the chair's, so it is not shown.
+    person = Track(id=9, label="person", conf=0.8, bbox=(1070, 350, 1190, 750), distance_m=2.0)
+    seen = {"obstacles": set(), "on_screen": set()}
+    real_nav_step, real_hit_boxes = osel.nav_step, osel.hit_boxes
+
+    def nav_step_spy(nav, target, others, *args, **kwargs):
+        seen["obstacles"] |= {t.id for t in others}
+        return real_nav_step(nav, target, others, *args, **kwargs)
+
+    def hit_boxes_spy(targets, *args, **kwargs):
+        seen["on_screen"] |= {t.id for t in targets}
+        return real_hit_boxes(targets, *args, **kwargs)
+
+    monkeypatch.setattr(osel, "nav_step", nav_step_spy)
+    monkeypatch.setattr(osel, "hit_boxes", hit_boxes_spy)
+
+    def script(s: DriveSession):
+        yield from s.wait(MIN_LOOK_S + 0.2)
+        yield from s.until(lambda: s.logged("CONFIRMED"), "the J key to confirm the chair", key=ord("j"))
+        yield from s.until(lambda: seen["obstacles"], "the planner to run once")
+
+    # Act
+    run_drive_session(monkeypatch, [CHAIR, person], script)
+
+    # Assert
+    assert seen["on_screen"] == {CHAIR.id}  # what the rider can choose is unchanged: the person gets no box
+    assert person.id in seen["obstacles"]  # but the planner knows the person is there
+
+
+# ---- the same rules without a clock: exact, instant checks of single steps
+
+
+class FakeDriver:
+    """Just enough of MotorDriver for one drive step: no ultrasonic reading, remembers the commands."""
+
+    def __init__(self) -> None:
+        self.sent = []
+
+    def distance_cm(self) -> None:
+        return None
+
+    def send(self, command) -> None:
+        self.sent.append(command)
+
+
+def one_drive_step(ctrl, now: float, frame_t: float, **extra):
+    """drive_tick() for a rider looking at the confirmed, visible chair. Returns (selection, controller, driver)."""
+    from control.goto import NavState
+    from vision.object_select import drive_tick
+
+    driver = FakeDriver()
+    sel = Selection(candidate=CHAIR.id, since=0.0, confirmed=CHAIR.id)
+    sel, ctrl, _nav, _note = drive_tick(sel, CHAIR.id, [CHAIR], FRAME_W, 85.5, driver, ctrl, NavState(), now, [],
+                                        obstacles=[CHAIR], frame_h=FRAME_H, frame_t=frame_t, **extra)
+    return sel, ctrl, driver
+
+
+def test_drive_step_keeps_moving_on_a_fresh_frame_and_stops_on_a_stale_one():
+    from control.state_machine import ControllerState
+    from shared.protocol import State, Target
+
+    moving = ControllerState(State.MOVING, Target.FWD, dwell_start=0.0)
+
+    _, fresh_ctrl, fresh_driver = one_drive_step(moving, now=10.0, frame_t=10.0 - STALE_INTENT_S + 0.1)
+    _, stale_ctrl, stale_driver = one_drive_step(moving, now=10.0, frame_t=10.0 - STALE_INTENT_S - 0.1)
+
+    assert fresh_ctrl.state == State.MOVING and not fresh_driver.sent[-1].stop
+    assert stale_ctrl.state == State.STOPPED and stale_driver.sent[-1].stop
+    assert stale_driver.sent[-1].t == 10.0  # the stop command itself is fresh, or the driver would ignore it as old
+
+
+def test_drive_step_operator_stop_latches_and_only_rearm_releases_it():
+    from control.state_machine import ControllerState
+    from shared.protocol import State, StopRequest, StopSource, Target
+
+    moving = ControllerState(State.MOVING, Target.FWD, dwell_start=0.0)
+
+    _, stopped, driver = one_drive_step(moving, now=10.0, frame_t=10.0,
+                                        stop_requests=(StopRequest(StopSource.OPERATOR, 10.0),))
+    _, still_stopped, _ = one_drive_step(stopped, now=12.0, frame_t=12.0)  # rider keeps looking: stays latched
+    _, rearmed, _ = one_drive_step(still_stopped, now=12.1, frame_t=12.1, rearm=True)
+
+    assert stopped.state == State.E_STOP and driver.sent[-1].stop
+    assert still_stopped.state == State.E_STOP
+    assert rearmed.state == State.STOPPED  # re-armed means stopped and ready, never straight back to moving
+
+
+@pytest.mark.parametrize("planner_takes_frame_h, expected", [(True, {"frame_h": FRAME_H}), (False, {})])
+def test_drive_step_passes_the_frame_height_only_to_a_planner_that_accepts_it(monkeypatch, planner_takes_frame_h,
+                                                                             expected):
+    import vision.object_select as osel
+    from control.goto import NavState
+    from control.state_machine import ControllerState
+
+    got = {}
+
+    def fake_nav_step(nav, target, others, frame_w, hfov_deg, distance_cm, **kwargs):
+        got.update(kwargs=kwargs)
+        return NavState(), (0, 0), False
+
+    monkeypatch.setattr(osel, "nav_step", fake_nav_step)
+    monkeypatch.setattr(osel, "NAV_STEP_TAKES_FRAME_H", planner_takes_frame_h)
+
+    one_drive_step(ControllerState(), now=10.0, frame_t=10.0)
+
+    assert got["kwargs"] == expected
+
+
+@pytest.mark.parametrize("dwell_s, confirm", [(DWELL_S, False), (None, True)])  # dwell mode, key / jaw mode
+def test_cleared_destination_cannot_be_confirmed_again_until_the_gaze_leaves_it(dwell_s, confirm):
+    from vision.object_select import clear_destination
+
+    box = (0.4, 0.3, 0.6, 0.7)
+    sel = clear_destination(Selection(candidate=7, since=0.0, confirmed=7, box=box))
+    assert sel.confirmed is None
+
+    sel = update_selection(sel, hit=7, now=10.0, dwell_s=dwell_s, box=box, confirm=confirm)  # still looking at it
+    sel = update_selection(sel, hit=130, now=20.0, dwell_s=dwell_s, box=box, confirm=confirm)  # tracker relabels it
+    sel = update_selection(sel, hit=130, now=30.0, dwell_s=dwell_s, box=box, confirm=confirm)
+    assert sel.confirmed is None  # however long the rider looks (or clenches), the same object stays unconfirmed
+
+    sel = update_selection(sel, hit=None, now=31.0, dwell_s=dwell_s)  # the gaze leaves ...
+    sel = update_selection(sel, hit=130, now=32.0, dwell_s=dwell_s, box=box)  # ... and comes back
+    sel = update_selection(sel, hit=130, now=32.0 + DWELL_S + 0.01, dwell_s=dwell_s, box=box, confirm=confirm)
+    assert sel.confirmed == 130
+
+
+def test_clearing_the_destination_does_not_block_a_different_object():
+    from vision.object_select import clear_destination
+
+    sel = clear_destination(Selection(candidate=7, since=0.0, confirmed=7, box=(0.1, 0.1, 0.3, 0.5)))
+    sel = update_selection(sel, hit=9, now=1.0, box=(0.6, 0.1, 0.9, 0.5))  # eyes move straight to another object
+    sel = update_selection(sel, hit=9, now=1.0 + DWELL_S + 0.01, box=(0.6, 0.1, 0.9, 0.5))
+    assert sel.confirmed == 9
+
+
+def test_status_line_puts_a_frozen_camera_first_and_lists_the_operator_keys_when_driving():
+    from vision.object_select import status_line
+
+    frozen = status_line("dwell", has_gaze=True, frame_age_s=STALE_INTENT_S + 1.0, must_look_away=False, driving=True)
+    driving = status_line("dwell", has_gaze=True, frame_age_s=0.03, must_look_away=False, driving=True)
+    choosing = status_line("dwell", has_gaze=True, frame_age_s=0.03, must_look_away=False, driving=False)
+
+    assert "CAMERA FROZEN" in frozen and "1.5 s" in frozen  # says how old the picture is
+    assert "SPACE" in driving and "R re-arm" in driving and "X cancel" in driving
+    assert "SPACE" not in choosing  # without --drive there is nothing to stop
+
+
+def test_session_ends_at_once_if_the_jaw_reader_dies():
+    import queue
+    import time
+
+    from vision.object_select import run
+
+    class FakeCv2:
+        def waitKey(self, _ms):  # noqa: N802 - OpenCV's name
+            return 255
+
+        def imshow(self, *_args):
+            pass
+
+    class NoFrames:
+        def latest(self):
+            return None
+
+    class DeadJaw:
+        mode, error = "dongle", RuntimeError("board unplugged")
+
+        def alive(self):
+            return False
+
+        def take(self):
+            return False
+
+    start = time.monotonic()
+    result = run(FakeCv2(), NoFrames(), model=None, classes=None, gaze_queue=queue.Queue(), hfov=70.0,
+                 device="cpu", seconds=5.0, confirm_mode="jaw", jaw=DeadJaw())
+    assert result == [] and time.monotonic() - start < 1.0  # did not wait 5 s for a clench that can never come

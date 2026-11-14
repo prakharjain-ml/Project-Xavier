@@ -4,21 +4,24 @@ The forward camera (Pixel / Logitech) shows the room full-screen with a red box 
 ByteTrack from vision/detect_track.py). The eye tracker (built-in camera, its own program) moves a green
 cursor. The box under the cursor turns YELLOW and a bar fills; holding your gaze for DWELL_S confirms it
 (GREEN). Later the confirmation also needs the EEG (the yellow box flickers, SSVEP must agree).
-Confirming only reports the choice: nothing drives the chair from here yet.
+Confirming only reports the choice, unless --drive is given: then the chair drives to the confirmed object.
 
     python -m vision.object_select --source 1 --eye-camera 0
-Keys: C = re-centre (look at the + first), X = cancel confirmation, Q / ESC = quit.
+Keys: C = re-centre (look at the + first), X = cancel the confirmed object, Q / ESC = quit.
+With --drive, for the teammate at the keyboard: SPACE = emergency stop (latched), R = re-arm after it.
 The window is full-screen, like the calibration screen, so gaze (0-1 screen coordinates) lines up with it.
 """
 
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import os
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -26,7 +29,7 @@ import numpy as np
 from control.goto import NavState, nav_step
 from control.state_machine import ControlInputs, ControllerState, step
 from shared.latest import drain_newest
-from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, Target
+from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, State, StopRequest, StopSource, Target
 from vision.detect_track import (
     DEFAULT_MODEL,
     MAX_TARGETS,
@@ -50,6 +53,10 @@ MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the scree
 SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
 MIN_ACCURACY = 0.85  # calibration check must reach this before selecting objects (one retry)
 MIN_LOOK_S = 0.3  # gaze must rest on a box this long before a clench / key confirms it (no sweep-past picks)
+STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
+# control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
+# of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
+NAV_STEP_TAKES_FRAME_H = "frame_h" in inspect.signature(nav_step).parameters
 RED, YELLOW, GREEN, GREY, CURSOR = (0, 0, 255), (0, 220, 255), (0, 220, 0), (160, 160, 160), (255, 120, 0)
 
 
@@ -59,6 +66,8 @@ class Selection:
     since: float | None = None  # when the gaze landed on it
     confirmed: int | None = None  # last confirmed object (stays until another is confirmed or X cancels)
     box: tuple[float, float, float, float] | None = None  # candidate's last gaze box (0-1 screen coordinates)
+    # The candidate was cancelled (X) or reached: it cannot be confirmed again until the gaze has left it.
+    must_look_away: bool = False
 
 
 def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float | None = DWELL_S,
@@ -67,21 +76,36 @@ def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float
 
     If the tracker relabels the object under the gaze (new ID, box in the same place: overlap >= SAME_OBJECT_IOU),
     it is the same object, so the dwell keeps running instead of restarting.
+
+    An object whose destination was just cleared (must_look_away, see clear_destination) is not confirmed again
+    while the gaze stays on it. The gaze leaving it (no box, or a different object) lifts that.
     """
     if hit is None:
-        return replace(sel, candidate=None, since=None, box=None)
+        return replace(sel, candidate=None, since=None, box=None, must_look_away=False)
     if hit != sel.candidate:
         same_object = box is not None and sel.box is not None and iou(box, sel.box) >= SAME_OBJECT_IOU
-        if same_object:
+        if same_object:  # still the same object, so must_look_away stays as it is
             confirmed = hit if sel.confirmed == sel.candidate else sel.confirmed
             return replace(sel, candidate=hit, box=box, confirmed=confirmed)
-        return replace(sel, candidate=hit, since=now, box=box)
+        return replace(sel, candidate=hit, since=now, box=box, must_look_away=False)
     sel = replace(sel, box=box if box is not None else sel.box)
+    if sel.must_look_away:
+        return replace(sel, since=now)  # dwell clock held at zero: no progress bar, no "CLENCH to confirm"
     looked = now - sel.since
     # Confirm by a clench/key (after a short look), or by dwell alone when dwell_s is set (dwell mode).
     if (confirm and looked >= MIN_LOOK_S) or (dwell_s is not None and looked >= dwell_s):
         return replace(sel, confirmed=hit)
     return sel
+
+
+def clear_destination(sel: Selection) -> Selection:
+    """No destination any more: X was pressed, or the chair arrived.
+
+    Whatever is under the gaze right now cannot be confirmed again until the gaze has left it and come back.
+    Without this, in dwell mode, a rider who is still looking at the object confirms it again in the same loop
+    pass (the dwell time is already over), so X did nothing and an arrival was reported on every pass.
+    """
+    return replace(sel, confirmed=None, must_look_away=sel.candidate is not None)
 
 
 def drive_intent(sel: Selection, hit: int | None, targets: list[Track]) -> Target:
@@ -147,6 +171,19 @@ def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now:
     return (min(1.0, max(0.0, sample.point[0] + offset[0])), min(1.0, max(0.0, sample.point[1] + offset[1])))
 
 
+def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look_away: bool, driving: bool) -> str:
+    """Text at the bottom of the screen, most urgent first: a frozen camera, then no gaze, then what to do next."""
+    if frame_age_s > STALE_INTENT_S:
+        return f"CAMERA FROZEN (no new picture for {frame_age_s:.1f} s)"
+    if not has_gaze:
+        return "NO GAZE (face not seen / eyes closed)"
+    keys = ("SPACE stop  R re-arm  " if driving else "") + "C re-centre  X cancel  Q quit"
+    if must_look_away:
+        return f"look away, then back, to choose this object again  |  {keys}"
+    how = {"dwell": "look for 1.5 s", "key": "look, then press J", "jaw": "look, then CLENCH"}[confirm_mode]
+    return f"{how} to confirm  |  {keys}"
+
+
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
          status: str, dwell_s: float | None = DWELL_S) -> np.ndarray:
     canvas = cv2.resize(frame, (CANVAS_W, CANVAS_H))
@@ -177,7 +214,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     ctrl, nav, drive_note = ControllerState(), NavState(), ""
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
-    targets: list[Track] = []
+    tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
+    targets: list[Track] = []  # the few of them shown as boxes: what the rider can choose
     frame, last_t, confirmations = None, None, []
     gaze_frames = total_frames = 0
     problems: dict[str | None, int] = {}
@@ -188,6 +226,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             break
         if not tracker_alive():  # a live test once ran 4 minutes with a dead tracker: stop and say so
             log.error("eye tracker stopped (see its error above): no gaze possible, ending the session")
+            break
+        if jaw is not None and not jaw.alive():  # the headset reader crashed: a clench could never confirm now
+            log.error("jaw confirm source died (%s): ending the session", jaw.error)
             break
         now = time.monotonic()
         snapshot = reader.latest()
@@ -203,7 +244,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
             log.info("re-centred: offset %.3f, %.3f", *offset)
         if key == ord("x"):
-            sel = replace(sel, confirmed=None)
+            sel = clear_destination(sel)
         point = corrected_point(sample, offset, now)
         boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
         hit = pick_region(point, boxes, hit) if point is not None else None
@@ -221,13 +262,16 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             log.info(line)
             confirmations.append(line)
         if driver is not None:
+            # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
+            stops = (StopRequest(StopSource.OPERATOR, now),) if key == STOP_KEY else ()
             sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
-                                                    confirmations)
+                                                    confirmations, obstacles=tracks, frame_h=frame.shape[0],
+                                                    frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY)
         total_frames += 1
         gaze_frames += point is not None
-        how = {"dwell": "look for 1.5 s", "key": "look, then press J", "jaw": "look, then CLENCH"}[confirm_mode]
-        status = ("NO GAZE (face not seen / eyes closed)" if point is None else
-                  f"{how} to confirm  |  C re-centre  X cancel  Q quit") + drive_note
+        # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
+        status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away,
+                             driver is not None) + drive_note
         cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status, dwell_s))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
@@ -236,26 +280,44 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
 
 
 def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
-               nav: NavState, now: float, log_lines: list[str]):
+               nav: NavState, now: float, log_lines: list[str], *, obstacles: Sequence[Track], frame_h: int,
+               frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False):
     """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
-    whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it."""
+    whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it.
+
+    targets = the boxes the rider can choose; obstacles = EVERY tracked object (the planner skips the target
+    itself). frame_t = when the camera frame all of this was computed from arrived. stop_requests / rearm = the
+    operator's SPACE / R keys for this step.
+    """
     target = next((t for t in targets if t.id == sel.confirmed), None)
     wheels = (0, 0)
     if target is not None:
-        nav, wheels, arrived = nav_step(nav, target, targets, frame_w, hfov, driver.distance_cm())
+        extra = {"frame_h": frame_h} if NAV_STEP_TAKES_FRAME_H else {}
+        nav, wheels, arrived = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm(), **extra)
         if arrived:
             line = f"ARRIVED at {target.label} #{target.id}"
             log.info(line)
             log_lines.append(line)
-            sel, nav, wheels = replace(sel, confirmed=None), NavState(), (0, 0)
+            # Arrived = no destination, and the object just reached must be looked away from before it can be
+            # chosen again. So the arrival is reported once and the chair stays stopped until a new choice.
+            sel, nav, wheels = clear_destination(sel), NavState(), (0, 0)
     else:
         nav = NavState()
     intent_target = drive_intent(sel, hit, targets)
-    inputs = ControlInputs(intent=Intent(intent_target, 1.0 if intent_target != Target.NONE else 0.0, t=now),
-                           distance_cm=driver.distance_cm())
+    # The Intent carries the time of the camera FRAME, not the time of this loop pass. A frozen camera keeps
+    # handing back its last frame; stamped with `now` it would look fresh forever. Stamped with the frame's own
+    # arrival time, the state machine's stale rule (older than STALE_INTENT_S -> STOPPED) stops the chair.
+    # The MotorCommand below is still stamped `now`: the driver ignores commands that are themselves old.
+    inputs = ControlInputs(intent=Intent(intent_target, 1.0 if intent_target != Target.NONE else 0.0, t=frame_t),
+                           stop_requests=stop_requests, rearm=rearm, distance_cm=driver.distance_cm())
+    before = ctrl.state
     ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels)
     driver.send(command)
+    if ctrl.state != before:
+        log.info("state %s -> %s", before.value, ctrl.state.value)
     note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
+    if ctrl.state == State.E_STOP:  # latched: only the operator's R key releases it
+        note += " (emergency stop: press R to re-arm)"
     return sel, ctrl, nav, note
 
 

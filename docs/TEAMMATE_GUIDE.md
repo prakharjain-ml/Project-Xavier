@@ -1,5 +1,12 @@
 # Teammate Guide: What We Are Building, Why, and How We Ship
 
+> **Status (Sat Nov 14).** This document describes the original SSVEP plan. What exists today: the rider looks at an
+> object or arrow on the laptop screen (webcam gaze), confirms by dwell or a jaw clench read through the OpenBCI
+> headset, and the chair drives through the ESP32 bridge. Only the flicker screen of the SSVEP plan was built: there
+> is no SSVEP decoder and no closed-eyes (alpha) detector. See `docs/PROJECT_CONTEXT.md` and `PROGRESS.md`.
+> Hardware facts below that are out of date: the pack is 7S, about 28 V (not 36 V); frames to the boards are 9 bytes;
+> the Cyton gives 250 Hz on the dongle (about 1000 Hz on the Wi-Fi shield); `tools/smoke.py` does not exist.
+
 This guide is for you (Prakhar) as a teammate on the HackPrinceton Fall 2026 SSVEP Wheelchair team. It explains the whole project in plain English: why it matters, how every part works together, what you own, and everything we must submit by Sunday morning.
 
 ---
@@ -61,12 +68,12 @@ The decoder is never allowed to spin the wheels directly. Your state machine run
 - `E_STOP`: Latched emergency stop triggered by closed eyes (`ALPHA`), an operator key (`OPERATOR`), or a fault (`FAULT`). Wheels stay `0` until a teammate explicitly presses the re-arm key (`R`) once the stop condition clears.
 
 ### Part 5: The Drive Platform and ESP32 Safety Bridge (`motors/` and `firmware/`, Pratosh and Keshav)
-A plank and chair with front and rear casters mount onto a `36 V` dual-hub-motor hoverboard flashed with open-source FOC serial firmware. Instead of connecting the laptop straight to the hoverboard, we put an **ESP32 microcontroller** in between:
+A plank and chair with front and rear casters mount onto a `36 V` (actual pack: 7S, about 28 V) dual-hub-motor hoverboard flashed with open-source FOC serial firmware. Instead of connecting the laptop straight to the hoverboard, we put an **ESP32 microcontroller** in between:
 
 - `motors/driver.py` sends ASCII speed lines (`C,<seq>,<left>,<right>\n`) over USB serial at `20 Hz` (`115200` baud).
-- **200 ms watchdog:** If the laptop crashes, freezes, or gets unplugged for `200 ms`, the ESP32 zeros both motors on its own.
+- **200 ms watchdog:** If the laptop crashes or freezes for `200 ms`, the ESP32 zeros both motors on its own (host simulation: 213 to 250 ms; not measured on the chair). If the USB cable is pulled the ESP32 loses power, and the boards' own timeout (about 500 ms) stops the wheels.
 - **Local ultrasonic brake:** An HC-SR04 distance sensor wired to the ESP32 stops forward motion in about `50 ms` if anything enters `OBSTACLE_STOP_CM`, even if the laptop still commands forward.
-- **Hardware kill switch:** A physical latching mushroom switch wired in the `36 V` battery line cuts motor power instantly, regardless of any software or microcontroller bug.
+- **Hardware kill switch:** A physical latching mushroom switch wired in the battery line (planned; no record that it is fitted) cuts motor power instantly, regardless of any software or microcontroller bug.
 
 ---
 
@@ -103,11 +110,11 @@ We are **not** building a medical device, clinical accuracy claims, outdoor driv
 | Teammate | Owns | How their work connects to yours |
 | --- | --- | --- |
 | **Prakhar (you)** | `shared/`, `interface/`, `control/` (design & tests), `docs/`, video, Devpost, live pitch | You define `shared/protocol.py` first so everyone imports the exact same dataclasses. Your `interface/` displays `ControlStatus`, and your `control/` consumes Vani's `Intent`. |
-| **Vani** | `bci/`, `tools/`, `vision/` (Mode 2) | Imports `shared/protocol.py`, feeds `Intent` and `StopRequest(ALPHA)` into `control/`, and builds `tools/smoke.py` + calibration scripts. |
+| **Vani** | `bci/`, `tools/`, `vision/` (Mode 2) | Imports `shared/protocol.py`, feeds `Intent` and `StopRequest(ALPHA)` into `control/`, and builds calibration scripts (`tools/smoke.py` was never written). |
 | **Pratosh** | `motors/`, `firmware/bridge/`, `control/` hardware integration | Reviews and finishes `control/` overnight Friday, turns your `MotorCommand` into ESP32 serial lines, and writes `bridge.ino`. |
 | **Keshav** | EEG prep, hoverboard FOC flash, chassis, casters, kill switch, ultrasonic wiring | Puts electrodes on you, verifies board pins with a multimeter, builds the physical chair, and walks beside the chair holding the kill switch. |
 
-**How we avoid git conflicts:** One branch and git worktree per folder. Nobody runs `git add .` after kickoff. Every merge to `main` gets reviewed by a second AI model family (`/review-diff`) and must keep `python tools/smoke.py` passing in under `10 s`.
+**How we avoid git conflicts:** One branch and git worktree per folder. Nobody runs `git add .` after kickoff. Every merge to `main` gets reviewed by a second AI model family (`/review-diff`) and should keep `python -m pytest -q` passing (`tools/smoke.py` was never written).
 
 ### Your schedule (Friday morning to Sunday afternoon)
 - **Friday before 6:30 pm (Phase 0 - Prep):** Post the indoor hoverboard venue question on HackPrinceton Discord, confirm Keshav's hardware checklist, pack 2 USB-C to USB-A adapters, verify `~/venvs/hp26` imports, and check in (`4:30 to 6:30 pm`). Dinner is `5:00 to 6:00 pm`; opening ceremony is `6:30 to 8:00 pm`.
@@ -187,4 +194,4 @@ Uploading the video does **not** replace live judging. Every track visits our as
 ### Non-negotiable safety rules at the judging table
 - **Never put a judge or spectator in the chair.** Only our calibrated teammate rides.
 - **Screen every viewer** for photosensitive epilepsy before pressing `SPACE` (keep the printed warning card on the table).
-- **Kill switch in Keshav's hand** beside the chair on every powered run, and **never charge the `36 V` hoverboard battery unattended**.
+- **Kill switch in Keshav's hand** beside the chair on every powered run, and **never charge the hoverboard battery (7S, about 28 V) unattended**.

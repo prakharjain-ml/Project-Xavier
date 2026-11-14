@@ -3,6 +3,24 @@
 At kickoff an agent turns this file into `shared/protocol.py` (frozen dataclasses + enums + constants).
 After that, change this file first, then regenerate. Everything marked VERIFY needs a real-hardware check.
 
+> **Implementation status (Sat Nov 14).** Formats and rules below are unchanged. Known differences from the code:
+> - Battery is 7S (about 28 V), frames are 9 bytes, firmware is RoboDurden's (not EFeru): already stated in the
+>   hoverboard section below. Any 36 V, 8-byte or EFeru wording elsewhere (plan, `docs/GLOSSARY.md`, `docs/QUESTIONS.md`,
+>   `docs/MESSAGES.md`) is out of date. Truth: `firmware/README.md`, `motors/bridge_protocol.py`.
+> - The `# <text>` info lines and the bridge's TX/RX auto-detect are described by the debug log as running on the
+>   boards. The sketch in the repo (`firmware/bridge/bridge.ino`) sends no `#` lines and has no auto-detect
+>   (`firmware/hoverboard/DEBUG_LOG.md`, `PROGRESS.md`).
+> - `D,` state `ESTOP` is listed but the repo sketch reports only `OK`, `OBSTACLE` and `WATCHDOG`.
+> - `TargetSet` and `GoalHint` over UDP are defined in `shared/protocol.py` but nothing sends or receives them.
+>   `vision/object_select.py --drive` calls the planner and state machine directly and owns the motor driver.
+> - `StopRequest` sources ALPHA is never produced (no alpha detector). `Intent` comes from gaze or keyboard, not
+>   an SSVEP decoder. `TARGET_FREQS_HZ`, `WINDOW_S`, `STEP_S`, `CONF_THRESHOLD`, `BANDPASS_HZ`, `ALPHA_BAND_HZ` apply
+>   only to the unbuilt decoder.
+> - The `GazeSample` message (eye tracker to app, UDP on 127.0.0.1) is not listed here; its format is
+>   `vision/gaze.py` `encode_gaze_message()`.
+> - Sampling rate: the dongle gives 250 Hz, the Wi-Fi shield about 1000 Hz (`docs/JAW_CONFIRM.md`). Read it from BrainFlow.
+> Evidence: `docs/PROJECT_CONTEXT.md` sections 5 and 9.
+
 ## Constants (single source)
 | Name | Value | Notes |
 | --- | --- | --- |

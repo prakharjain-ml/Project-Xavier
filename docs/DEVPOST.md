@@ -8,7 +8,7 @@ the chair drives itself to a chosen object in the live demo]. Submit by 7:45 am.
 **Project name:** Xavier
 
 **Elevator pitch (under 200 characters):** A hoverboard wheelchair you steer with your eyes and confirm with a jaw
-clench, read by an OpenBCI headset. Every unclear signal means stop.
+clench, read by an OpenBCI headset. Its default command is stop. [VERIFY: jaw clench read from a real head]
 
 **Gallery tagline:** Closing the loop between human intent and autonomous motion.
 
@@ -24,22 +24,26 @@ Xavier lets someone choose a direction with their eyes and confirm it with their
 
 1. A webcam tracks the rider's gaze across four arrows on the laptop.
 2. Holding the gaze on an arrow for 1.5 s starts the chair that way.
-3. It moves only while they keep looking. Looking at the centre or away stops it within 50 ms.
+3. It moves only while they keep looking. Looking at the centre or away stops it. [VERIFY: stop time, measured
+   from the gaze leaving to the wheels stopping. No end-to-end timing exists yet.]
 4. In object mode, the phone on the back of the laptop boxes chairs and people. The box under the gaze turns
-   yellow; a jaw clench, read by an OpenBCI electrode behind the ear, turns it green. [VERIFY: keep only if it
-   works on Vani at the table.]
+   yellow; a jaw clench, read by an OpenBCI electrode behind the ear, turns it green. The chair then drives
+   toward that object while the rider keeps looking at it. [VERIFY: keep only if the clench works on Vani at
+   the table, and only if the drive-to-object run has been done on the real chair.]
 
 [VERIFY: say whether the wheels carry a rider, run on a stand, or are bench-tested unloaded.]
 
 ## How we built it
 EyeTrax, an open-source gaze library, sends a gaze point for every webcam frame. YOLO and ByteTrack box objects in
 the phone feed. BrainFlow streams the Cyton to the laptop, and our detector measures 40 to 200 Hz muscle energy
-every 0.1 s, skipping mains hum. A clench counts only after 0.3 s, and calibration refuses to start unless a clench
-is at least three times stronger than rest.
+every 0.1 s, skipping mains hum. A clench counts only after 0.3 s above a threshold set from the rider's own rest
+and clench levels.
 
-A state machine running 20 times a second turns those signals into wheel speeds, and its default answer is stop.
+A safety state machine turns those signals into wheel speeds, and its default answer is stop. It runs at 20 Hz in
+the arrows app. [VERIFY: rate in object mode, where it runs once per video frame.]
 An ESP32-S3 converts the speeds into 9-byte frames for the hoverboard's two boards, which run the open-source
-RoboDurden firmware we flashed. If the laptop goes quiet for 200 ms, the ESP32 stops the wheels on its own.
+RoboDurden firmware we flashed. If the laptop goes quiet, the ESP32's watchdog zeroes the wheels on its own. It is
+set to 200 ms. [VERIFY: measure the stop time on the chair, with the laptop hung and with the USB cable pulled.]
 
 One decision shaped the build: gaze alone selects whatever you glance at (the Midas-touch problem). So gaze picks,
 and a deliberate clench confirms.
@@ -50,8 +54,9 @@ the serial link was the 5-pin plug. Even then every byte was garbled, because ou
 the ESP32 was reading mains hum. A wire to the battery's negative fixed it, and the left wheel answered our laptop.
 
 Our first 15 Hz recording looked like brain data. There was no peak at 15 Hz. The same peaks at 9.75, 19.5 and
-29.25 Hz sat on every channel, unplugged ones included, and two channels were identical. We rewired the electrodes
-and now check the signal before every session. [VERIFY: what fixed it.]
+29.25 Hz sat on every channel, unplugged ones included, and two channels were identical. As of Saturday evening
+the headset had not given us a usable recording, and we have no SSVEP decoder. We switched the plan to gaze plus
+a jaw clench. [VERIFY: current state of the headset signal, and what fixed it if it is fixed.]
 
 ## Accomplishments that we're proud of
 - Our laptop drove the hoverboard's left wheel forward, backward and in a turn, and the wheel stopped when the
@@ -66,8 +71,10 @@ and now check the signal before every session. [VERIFY: what fixed it.]
 - [VERIFY: one lesson per teammate, in their words.]
 
 ## What's next
-- Steer with brain signals alone. The flicker screen is built; EEG decoding still has to pass on a real head.
-- Drive to the chosen object. The path planner avoids obstacles in simulation; next it runs on the chair.
+- Steer with brain signals alone. The flicker screen is built; the EEG decoder is not written, and nothing has
+  passed on a real head yet.
+- Drive to the chosen object reliably. The planner has only run in simulation and on a fake serial port; next it
+  runs on the chair with a real camera.
 - Test with people who use power wheelchairs. So far we've only tested on ourselves.
 
 **Built with:** python, opencv, ultralytics-yolo, bytetrack, eyetrax, mediapipe, openbci-cyton, brainflow, numpy,
@@ -89,8 +96,12 @@ Then the team at the table.
 | --- | --- |
 | Discord usernames | from each teammate |
 | Rider / stand / bench | how the wheels run in the live demo |
+| Stop time after the gaze leaves (step 3) | timed from gaze leaving to wheels stopping, on the chair |
+| Watchdog stop time | laptop hung and USB cable pulled, measured at the wheels; the code reads about 0.25 s and about 0.5 s |
+| Drive to object (step 4) | a run with the real camera and the wheels, wheels-up first; see PROGRESS.md |
+| State machine rate in object mode | log the loop rate during an `object_select --drive` run |
+| Headset signal state / what fixed it | Vani, with a fresh recording |
 | Clench confirm on Vani (step 4, accomplishment 3, caption 2) | `python -m bci.jaw_live ... --channels 1` output: ratio line + CONFIRM count |
 | Hoverboard hours dead, time it worked, right wheel | Keshav / Pratosh |
-| What fixed the 9.75 Hz signal | the person who rewired it |
 | One lesson per teammate | each teammate |
 | Gemini in Built with | only if the demo runs `--gemini` |

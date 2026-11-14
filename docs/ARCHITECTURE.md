@@ -1,5 +1,13 @@
 # Architecture
 
+> **Status (Sat Nov 14).** This document describes the original SSVEP plan. What exists today: the rider looks at an
+> object or arrow on the laptop screen (webcam gaze), confirms by dwell or a jaw clench read through the OpenBCI
+> headset, and the chair drives through the ESP32 bridge. Only the flicker screen of the SSVEP plan was built: there
+> is no SSVEP decoder and no closed-eyes (alpha) detector. See `docs/PROJECT_CONTEXT.md` and `PROGRESS.md`.
+> The diagram and folder map below are the plan. Boxes `bci/acquire`, `bci/decoder`, `bci/alpha`, `control/mapping`,
+> `vision/servo`, `motors/teleop` and `tools/smoke.py` were never written. The object-drive path actually used is in
+> `docs/PROJECT_CONTEXT.md` section 4.
+
 ## Data flow
 
 ```mermaid
@@ -14,7 +22,7 @@ flowchart LR
   US[Ultrasonic sensor] --> BR
   BR -->|distance, status| DRV
   DRV -->|distance_cm| CTRL
-  BR -->|8-byte frames, UART 3.3 V| FW[Hoverboard FOC firmware] --> M[Hub motors, 36 V pack]
+  BR -->|9-byte frames, UART 3.3 V| FW[Hoverboard FOC firmware] --> M[Hub motors, 7S pack about 28 V]
   KILL[Hardware kill switch] -->|cuts power| M
   UI[interface/flicker<br/>pygame] -.shows targets.-> USER((Wearer))
   USER -.gaze.-> EEG
@@ -38,7 +46,7 @@ Threads talk through latest-only `queue.Queue(maxsize=1)` objects passed in at s
 
 ## Folder map
 ```
-pyproject.toml  minimal editable package (`pip install -e .` at kickoff so `python tools/smoke.py` imports cleanly)
+pyproject.toml  planned, does not exist
 bci/            __init__.py, acquire.py, filters.py, ssvep.py, decoder.py, alpha.py, tests/
 interface/      __init__.py, flicker.py, widgets.py, tests/
 control/        __init__.py, state_machine.py, mapping.py, tests/
@@ -46,17 +54,17 @@ motors/         __init__.py, bridge_protocol.py, driver.py, mock_serial.py, tele
 firmware/       bridge/bridge.ino (ESP32), README.md (pin map, flashing notes)
 vision/         __init__.py, detect_track.py, servo.py, tests/
 shared/         __init__.py, protocol.py (generated from docs/INTERFACES.md at kickoff), tests/
-tools/          fake_eeg.py, record.py, analyze.py, smoke.py
-app.py          wires everything: python app.py --synthetic --mock  |  python app.py --cyton --serial /dev/cu.X
+tools/          fake_eeg.py, record.py, analyze.py, smoke.py  (none written; only tools/README.md exists)
+app.py          arrows mode: python app.py --keyboard|--gaze --mock|--serial /dev/cu.X  (no --synthetic or --cyton)
 ```
-File names are the plan, not code that exists yet. Agents create them during the phases.
+File names in this map are the plan; several were never created (see the status note at the top).
 
 ## Latency budget (targets)
 | Path | Budget |
 | --- | --- |
 | Gaze -> selection | window 1.5 s + dwell 1.5 s ~ 3 s |
 | Look away -> STOP | under 1 s (target loses the window) |
-| Eyes closed -> STOP | about 1 s (alpha window) |
+| Eyes closed -> STOP | target only; no alpha detector exists. Closed eyes over 0.4 s give no gaze, which stops without latching |
 | Obstacle -> STOP | next ESP32 loop (about 50 ms), independent of the laptop |
-| Laptop hang -> STOP | 200 ms ESP32 watchdog |
+| Laptop hang -> STOP | 200 ms ESP32 watchdog target; host simulation of the sketch: 213 to 250 ms, not measured on the chair. USB cable pulled: about 500 ms (board timeout) |
 | Kill switch -> STOP | immediate, cuts motor power |

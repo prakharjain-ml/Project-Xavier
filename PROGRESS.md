@@ -100,6 +100,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~6:27 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (route preview rebuilt: outlines, cursor, route on the real floor)
+- Done: `python -m vision.nav_preview` is rebuilt in the look of Prakhar's reference image. Every object gets a thin cyan outline from a segmentation model (`yolo11n-seg`, in `~/hp26-models/`; `Track.outline` in `vision/detect_track.py`). The mouse stands in for the eyes: rest it on an object for 1.5 s to choose it. Gemini finds the floor and extra no-go zones in a background thread (`vision/scene_ai.py`). The route is planned locally in a top-down view of the floor in real centimetres and drawn back on the image (`vision/floor_route.py`, `vision/route_scene.py`, screen in `vision/hud.py`). Rules: `docs/ROUTE_REQUIREMENTS.md` (12 constraints). The old blue panel is gone.
+- Evidence (command + result): `python -m pytest -q` -> `448 passed`. `python -m vision.nav_preview --image <lounge photo> --cursor 0.87,0.60 --no-window --save out.png` -> `route=8 pts floor=gemini`, saved as `docs/img/route_preview_design.jpg`. Screen draws in about 3.5 ms; planner 2 to 10 ms; Gemini 2.0 to 9.6 s per answer (5 timed calls). Mutation checks for C1, C2, C5, C6 each fail a test.
+- Not done: the route on screen is not yet the route the chair drives (motors still follow `control/goto.py`). The real gaze screen (`vision/object_select.py`) still has the old boxes.
+- Known limits: Gemini misses objects in some answers; a level camera at 35 in sees no floor nearer than about 1.7 m; detected chair distance read 1.68 to 1.71 m against a measured 1.40 m when the box is cut off by the frame.
+- Camera defaults now 0.89 m high, level (Prakhar's table set-up). Re-measure on the chair (`--cam-height`, `--cam-pitch`).
+
 ### Sat Nov 14, ~5:31 PM - Claude Code (Fable 5.2), for Prakhar (floor-path HUD for the path preview)
 - Done: `python -m vision.nav_preview` now draws the shortest safe path on the floor: `control/astar.py` (A* on a 10 cm grid, obstacles grown by 0.45 m, string-pulled), `vision/floor.py` (floor point -> pixel from camera height + tilt), `vision/hud.py` (blue-gradient ribbon as wide as the chair with flowing arrows, stop ring, corner-bracket boxes, stats panel: target, distance/bearing, path/ETA, clearance, obstacles, speed/turn, motor command, wheel bars). Still sends nothing to any motor.
 - Evidence (command + result): `python -m pytest -q` -> `285 passed`; HUD draw time 20 ms per frame (A* 2.7 ms); live frame from the Pixel back camera rendered through the HUD.
@@ -151,6 +158,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## docs/ (owner: Prakhar)
+### Sat Nov 14, ~6:28 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (independent audit, next steps, honest docs)
+- Done: `docs/PROJECT_CONTEXT.md` (independent audit: how the whole project works, plus 14 findings with proof scripts). `docs/NEXT_STEPS.md` (ranked work for the hours left). Honesty pass over `DEVPOST.md`, `DEMO.md` (rewritten for the gaze + confirm + drive demo), `README.md`, `ARCHITECTURE.md`, `PRD.md`, `TEAMMATE_GUIDE.md`; `SAFETY.md` and `INTERFACES.md` only gained an "Implementation status" note, their rules are unchanged.
+- Audit findings being fixed tonight (see the folder sections when they land): frozen camera keeps driving; arrival unreachable for chair/table/person; no operator stop in `object_select --drive`; obstacles limited to 4 on-screen boxes; no soft start; spin inside the motor dead band; jaw calibration accepts a dead signal.
+- Needs a human: (1) the bridge sketch that PROGRESS describes (auto-detect, `hover_link.h`) is on no GitHub branch, and `firmware/README.md` says 4-pin plug while the debug log says 5-pin (its fifth pin carries about 14 V): Keshav / Pratosh please push the real sketch and fix the README. (2) The ultrasonic stop and kill switch have no test record. (3) `AGENTS.md` still describes the SSVEP design and `tools/smoke.py`, which does not exist (list of stale lines in the docs agent's report; humans own that file). (4) `DEVPOST.md` has 14 `[VERIFY]` markers to clear.
+- Evidence: audit ran `python -m pytest -q` on a clean export of 1711282 -> `285 passed`; its proofs fake the camera, detector, tracker, headset and port (nothing ran on hardware).
+
 ### Fri Nov 13, 2:48 pm - Gemini 4 Carbon
 - Done: Resolved all pre-kickoff audit issues across `docs/`, `AGENTS.md`, `motors/README.md`, `.cursor/plans/ssvep-chair.plan.md`, and `.cursor/rules/` (`20-bci.mdc`, `30-interface.mdc`, `50-motors.mdc`); added printable `docs/PHOTOSENSITIVITY_CARD.md`; installed `OpenBCI_GUI.app` (`v6.0.0-beta.1`), `ffmpeg` (`9.0.2`), `opencv-python-headless`, and offline YOLO weights (`yolov8n.pt`, `yolo11n.pt` in `~/hp26-models/`).
 - In progress (file:function, state): none

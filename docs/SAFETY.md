@@ -2,6 +2,24 @@
 
 A person sits on this chair. Every rule here beats every feature.
 
+> **Implementation status (Sat Nov 14).** The rules below are unchanged. Where the code does not match them yet:
+> - Layer 4 and layer 5 "closing the eyes puts it into latched `E_STOP`" are NOT implemented. No alpha detector
+>   exists (`bci/alpha.py` was never written). Closed eyes for more than 0.4 s, or a lost face, give "no gaze", which
+>   stops the chair without latching (`vision/gaze.py` `update_blink()`). `StopRequest(ALPHA)` is never produced.
+> - `StopRequest(OPERATOR)` is produced only by `app.py` (SPACE, R). `vision/object_select.py --drive` does not
+>   use it; see `PROGRESS.md` for the current state.
+> - Layer 2: the 200 ms watchdog is in `firmware/bridge/bridge.ino`. A host run of that logic stopped the wheels 213
+>   to 250 ms after the last line (the rule is checked every 50 ms). If the USB cable is pulled the ESP32 loses
+>   power with it, so the boards' own 500 ms timeout is what stops the wheels (`firmware/README.md`). Neither time
+>   has been measured on the chair. The sketch on the ESP32 may not be the one in the repo (`PROGRESS.md`,
+>   `firmware/hoverboard/DEBUG_LOG.md`).
+> - The ultrasonic stop has no recorded hardware test, and an echo timeout reads as "clear" by design.
+> - Layer 1 (kill switch): no record in the repo that it is fitted.
+> - The "decoder" rules (layer 4, `CONF_THRESHOLD`) apply to SSVEP, which has no decoder. The shipped intent
+>   sources are gaze (`app.py --gaze`, `vision/object_select.py`) and the keyboard.
+> - Photosensitivity: it applies only to the flicker screen (`interface/flicker.py`). The object demo does not flicker.
+> Evidence: `docs/PROJECT_CONTEXT.md` sections 6 and 8.
+
 ## Layers (defense in depth)
 1. Hardware kill switch in a human hand during every powered test. Cuts motor power, independent of software.
 2. ESP32 bridge: commands zero if the laptop is silent for `BRIDGE_WATCHDOG_MS` (200 ms), stops net forward

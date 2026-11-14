@@ -1,5 +1,10 @@
 # PRD: SSVEP BCI Wheelchair
 
+> **Status (Sat Nov 14).** This document describes the original SSVEP plan. What exists today: the rider looks at an
+> object or arrow on the laptop screen (webcam gaze), confirms by dwell or a jaw clench read through the OpenBCI
+> headset, and the chair drives through the ESP32 bridge. Only the flicker screen of the SSVEP plan was built: there
+> is no SSVEP decoder and no closed-eyes (alpha) detector. See `docs/PROJECT_CONTEXT.md` and `PROGRESS.md`.
+
 ## Problem
 People with high spinal cord injury, ALS or severe cerebral palsy often cannot use a joystick. Existing
 alternatives (sip-and-puff, head arrays, eye-gaze trackers, attendant control) are slow, need residual motor
@@ -32,7 +37,7 @@ Medical-grade accuracy, outdoor use, user accounts, cloud anything, a mobile app
 ## Judging criteria mapping (onsite packet)
 | Criterion | Our answer |
 | --- | --- |
-| Creativity | Brain signals instead of hands; the stop is eyes-closed, the most natural gesture |
+| Creativity | Planned: brain signals instead of hands, eyes-closed stop. Today: gaze plus jaw clench; no closed-eyes stop exists |
 | Utility | It drives, live, in front of the judge |
 | Charity | Independence for people who cannot use a joystick |
 | Avidity | Honest demo, clear what's next (more targets, calibration-free, clinical partners) |

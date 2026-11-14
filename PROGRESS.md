@@ -32,6 +32,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## control/ (owner: Prakhar design, Pratosh integration)
+### Sat Nov 14, ~2:30 am - Claude Code (Opus 5.5), for Prakhar
+- Done: `control/state_machine.py`: pure `step(prev, ControlInputs, now, mapping)` -> (ControllerState, MotorCommand, ControlStatus); every SAFETY.md row tested (`control/tests/test_state_machine.py`, 53 tests incl. 1,000-intent fuzz and a 20 Hz dwell run). `provisional_mapping` = INTERFACES.md table; Pratosh's `control/mapping.py` (task 2.12) plugs in via `mapping=`.
+- Interpretations for the team (please confirm at the 11 am sync): (1) stale/missing Intent does NOT clear E_STOP; only re-arm does. (2) "no active StopRequest" = none in the last `STOP_ACTIVE_S` = 0.5 s, so `bci/alpha.py` must keep sending StopRequest while eyes stay closed.
+- Next step: Pratosh: `mapping.py` + wheel-sign check; app.py (task 4.1) calls `step` at CONTROL_HZ.
+- Known bugs: none known.
+- Evidence (command + result): `python -m pytest -q control/tests shared/tests vision/tests` -> `111 passed`; mutation check (disable obstacle block; let stale clear E_STOP) -> 3 tests fail for each.
+
 ### [time] - [model/agent]
 - Done:
 - In progress (file:function, state):
@@ -48,6 +55,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~2:00 am - Claude Code (Opus 5.5), for Prakhar
+- Done: frequency assignment logic in `vision/detect_track.py`: `separate_targets` keeps only boxes with >= `MIN_GAP_FRAC` (5% of width) empty space from better-ranked boxes (overlap = rejected, next-best fills the slot); `assign_frequencies` keeps existing frequencies, gives a new box the free frequency furthest from its nearest neighbour's.
+- Next step: render the actual flicker patches (interface/, pygame, separate process); tune MIN_GAP_FRAC in calibration.
+- Known bugs: detect_fps 6-9 when Chrome uses ~86% CPU; close heavy tabs for demos.
+- Evidence (command + result): `python -m pytest -q vision/tests` -> `36 passed`; live 30 s run -> `targets_now=2 labels=['chair']`.
+
 ### Sat Nov 14, 12:50 am - Claude Code (Opus 5.5), for Prakhar
 - Done: `vision/destinations.py`: Gemini ranker (background thread, 1 frame every 4 s, JSON destinations with 0-1000 boxes) + `rank_targets` merge (Gemini-matched YOLO tracks first, Gemini-only targets like doors, then steadiest YOLO). `python -m vision.detect_track --gemini`. Installed `google-genai` 3.3.0 (needed for Gemini calls).
 - In progress (file:function, state): LIVE. `gemini-2.5-flash` retired, 3.7/3.8-flash overloaded (503/504); fallback chain `GEMINI_MODELS` starts with `gemini-3.5-flash-lite` (1.1-2.7 s/answer, found a door). Live 40 s run: Gemini labels 'table with items 0.85', 'conference table' merged onto YOLO track #85 (~1.74 m); detect_fps=19.0. Dropped suggestions with score < 0.3. Sat ~1:30 am: new `SYSTEM_PROMPT` (rider context, score rubric, exclusions incl. portraits/stairs, box-size rule, label reuse) + API-enforced `RESPONSE_SCHEMA` + previous labels fed back; live: 'desk with laptop 0.90' then reused at 0.88; 33 tests pass. detect_fps fell to 9.1 in that run: check.

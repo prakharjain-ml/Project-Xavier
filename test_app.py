@@ -239,3 +239,19 @@ def test_start_gaze_process_receives_udp_samples_and_drops_garbage(monkeypatch):
         assert abs(sample.t - _time.monotonic()) < 1.0  # stamped on arrival with this process's clock
     finally:
         stop.set()
+
+
+def test_recentre_key_shifts_gaze_so_centre_reads_as_centre():
+    source = _gaze_source_with(GazeSample((0.5, 0.65), False, True, 10.0))  # rider looks at centre, reads low
+    source.snapshot(10.0)
+    source.on_event(key(pygame.KEYDOWN, pygame.K_c))
+    source.snapshot(10.05)  # offset applied on the control thread
+    assert source.cursor() == pytest.approx((0.5, 0.5))
+    source._queue.put(GazeSample((0.5, 0.35), False, True, 10.1))  # looking up: 0.35 - 0.15 offset = 0.2
+    assert source.snapshot(10.1).intent.target == Target.FWD
+
+
+def test_cursor_is_none_without_fresh_gaze():
+    source = _gaze_source_with()
+    source.snapshot(1.0)
+    assert source.cursor() is None

@@ -103,6 +103,9 @@ class GazeIntentSource:
         self._region: str | None = None  # current region, kept for hysteresis
         self._stop_pressed = False
         self._rearm_pressed = False
+        self._recentre_pressed = False
+        self._offset = (0.0, 0.0)  # added to every gaze point; set by re-centring (C key)
+        self._cursor: tuple[float, float] | None = None  # for the on-screen gaze dot
 
     def on_event(self, event: pygame.event.Event) -> None:
         with self._lock:
@@ -110,6 +113,13 @@ class GazeIntentSource:
                 self._stop_pressed = True
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
                 self._rearm_pressed = True
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_c:
+                self._recentre_pressed = True  # rider is looking at the centre "+" right now
+
+    def cursor(self) -> tuple[float, float] | None:
+        """Corrected gaze point for the on-screen dot (main thread reads it)."""
+        with self._lock:
+            return self._cursor
 
     def _newest_sample(self):
         while True:  # drain: only the newest sample matters
@@ -121,10 +131,17 @@ class GazeIntentSource:
     def snapshot(self, now: float) -> ControlInputs:
         sample = self._newest_sample()
         with self._lock:
-            stop, rearm = self._stop_pressed, self._rearm_pressed
-            self._stop_pressed = self._rearm_pressed = False
+            stop, rearm, recentre = self._stop_pressed, self._rearm_pressed, self._recentre_pressed
+            self._stop_pressed = self._rearm_pressed = self._recentre_pressed = False
         fresh = sample is not None and sample.point is not None and now - sample.t <= STALE_INTENT_S
-        self._region = pick_region(sample.point, ARROW_REGIONS, self._region) if fresh else None
+        if fresh and recentre:
+            # Drift correction: whatever we read while the rider looks at the centre becomes (0.5, 0.5).
+            self._offset = (0.5 - sample.point[0], 0.5 - sample.point[1])
+        point = (min(1.0, max(0.0, sample.point[0] + self._offset[0])),
+                 min(1.0, max(0.0, sample.point[1] + self._offset[1]))) if fresh else None
+        with self._lock:
+            self._cursor = point
+        self._region = pick_region(point, ARROW_REGIONS, self._region) if point else None
         target = Target(self._region) if self._region else Target.NONE
         intent = Intent(target=target, confidence=1.0 if target != Target.NONE else 0.0, t=now)
         stops = (StopRequest(StopSource.OPERATOR, now),) if stop else ()
@@ -235,7 +252,8 @@ def main(argv: list[str] | None = None, start_events: list[str] | None = None) -
             threading.Thread(target=control_loop, args=(source, driver, status_queue, stop, result),
                              name="control", daemon=True).start()
             stats = run_flicker(screen, clock, None, has_vsync, deadline, status_queue, key_sink=source.on_event,
-                                static=args.gaze)  # gaze mode: arrows do not flicker
+                                static=args.gaze,  # gaze mode: arrows do not flicker
+                                cursor=source.cursor if args.gaze else None)
     finally:
         stop.set()
         driver.stop()  # final explicit STOP lines, then close the port

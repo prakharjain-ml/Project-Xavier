@@ -148,6 +148,18 @@ def draw_arrows(screen: pygame.Surface, frame_index: int, schedule: dict[Target,
             pygame.draw.rect(screen, color, (bar.x, bar.y, int(bar.width * status.dwell_fraction), bar.height))
 
 
+def draw_gaze_cursor(screen: pygame.Surface, font: pygame.font.Font, point: tuple[float, float] | None) -> None:
+    """Gaze mode: centre "+" for re-centring (C key), help text, and a green dot where we think the rider looks."""
+    width, height = screen.get_size()
+    cx, cy = width // 2, height // 2
+    pygame.draw.line(screen, OUTLINE, (cx - 15, cy), (cx + 15, cy), 3)
+    pygame.draw.line(screen, OUTLINE, (cx, cy - 15), (cx, cy + 15), 3)
+    hint = font.render("Look at an arrow to choose it. Centre = stop. Look at + and press C to re-centre.", True, OUTLINE)
+    screen.blit(hint, hint.get_rect(midbottom=(cx, height - 10)))
+    if point is not None:
+        pygame.draw.circle(screen, MOVING_COLOR, (int(point[0] * width), int(point[1] * height)), 14)
+
+
 def draw_single(screen: pygame.Surface, frame_index: int, frames: int) -> None:
     width, height = screen.get_size()
     side = int(min(width, height) * SINGLE_FRACTION)
@@ -178,7 +190,8 @@ def wait_until(deadline: float) -> float:
 
 def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames: int | None, has_vsync: bool,
                 deadline: float | None, status_queue: queue.Queue | None,
-                key_sink: Callable[[pygame.event.Event], None] | None = None, static: bool = False) -> FrameStats:
+                key_sink: Callable[[pygame.event.Event], None] | None = None, static: bool = False,
+                cursor: Callable[[], tuple[float, float] | None] | None = None) -> FrameStats:
     """The 60 Hz loop. One iteration = one display refresh; frame_index drives every flicker."""
     schedule = flicker_schedule()
     font = pygame.font.Font(None, 28)
@@ -199,6 +212,8 @@ def run_flicker(screen: pygame.Surface, clock: pygame.time.Clock, single_frames:
             draw_arrows(screen, frame_index, schedule, status, static)
         else:
             draw_single(screen, frame_index, single_frames)
+        if cursor is not None:
+            draw_gaze_cursor(screen, font, cursor())
         if show_stats:
             draw_overlay(screen, font, stats, status)
         if not has_vsync:

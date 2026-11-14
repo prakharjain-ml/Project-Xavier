@@ -26,16 +26,21 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from shared.protocol import TARGET_FREQS_HZ as PROTOCOL_FREQS_HZ
 from vision.camera_source import LatestFrameReader, open_capture, parse_source, redact_url
 
 log = logging.getLogger("vision.detect_track")
 
-# TODO(task 1.3): import these from shared/protocol.py once it exists; values copied from docs/INTERFACES.md.
-TARGET_FREQS_HZ = (60 / 9, 60 / 7, 12.0, 15.0)
+# The 4 flicker frequencies come from the shared contract, in slot order (6.67, 8.57, 12, 15 Hz).
+TARGET_FREQS_HZ = tuple(PROTOCOL_FREQS_HZ.values())
 MAX_TARGETS = 4
 DEFAULT_MODEL = os.path.expanduser(os.environ.get("YOLO_MODEL", "~/hp26-models/yolo11n.pt"))
 DEFAULT_HFOV_DEG = 70.0  # horizontal field of view guess for a phone/webcam; calibrate with --hfov
 MIN_CONF = 0.4  # ignore detections YOLO is less sure about
+# Minimum empty space between two flickering boxes, as a fraction of frame width. On the 13.6" laptop screen at
+# ~55 cm viewing distance, 5% of the width is ~1.5 cm, about 1.5 degrees of visual angle: enough that staring at
+# one box keeps the neighbour mostly outside the sharp centre of vision. Tune in calibration.
+MIN_GAP_FRAC = 0.05
 LOG_EVERY_S = 1.0
 QUIT_KEYS = {ord("q"), 27}
 SLOT_COLORS = ((255, 140, 0), (0, 200, 255), (200, 0, 255), (0, 220, 0))  # BGR, one per frequency slot
@@ -89,12 +94,67 @@ def pick_targets(tracks: Sequence[Track], first_seen: dict[int, float], max_n: i
     return sorted(tracks, key=lambda t: (first_seen.get(t.id, math.inf), -area(t)))[:max_n]
 
 
-def assign_frequencies(target_ids: Sequence[int], previous: dict[int, float]) -> dict[int, float]:
-    """Return a new id->frequency map. Objects keep their frequency while tracked; new ones get a free one."""
-    kept = {tid: previous[tid] for tid in target_ids if tid in previous}
-    free = [f for f in TARGET_FREQS_HZ if f not in kept.values()]
-    new_ids = [tid for tid in target_ids if tid not in kept]
-    return {**kept, **dict(zip(new_ids, free))}
+def box_center(bbox: tuple[float, float, float, float]) -> tuple[float, float]:
+    return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+
+
+def boxes_conflict(a: Sequence[float], b: Sequence[float], min_gap_px: float) -> bool:
+    """True if two boxes overlap or sit closer than min_gap_px.
+
+    Why: the eye takes in a few degrees around the gaze point. Two flickers that close both reach the visual
+    cortex, the EEG shows both frequencies, and the decoder cannot tell which one the rider means.
+    The gap is the empty space between the boxes along x or y (negative when they overlap).
+    """
+    gap_x = max(a[0] - b[2], b[0] - a[2])
+    gap_y = max(a[1] - b[3], b[1] - a[3])
+    return max(gap_x, gap_y) < min_gap_px
+
+
+def separate_targets(ranked: Sequence[Track], frame_width: int, max_n: int = MAX_TARGETS) -> list[Track]:
+    """Walk the ranked list best-first and keep a target only if it is clear of every target already kept.
+
+    A conflicting target is skipped (not merged), so its slot goes to the next-best target that has room.
+    """
+    min_gap_px = MIN_GAP_FRAC * frame_width
+    kept: list[Track] = []
+    for target in ranked:
+        if all(not boxes_conflict(target.bbox, other.bbox, min_gap_px) for other in kept):
+            kept.append(target)
+        if len(kept) == max_n:
+            break
+    return kept
+
+
+def assign_frequencies(target_ids: Sequence[int], previous: dict[int, float],
+                       centers: dict[int, tuple[float, float]] | None = None) -> dict[int, float]:
+    """Return a new id->frequency map (inputs untouched).
+
+    1. Stability first: an object keeps its frequency while it stays a target (changing it would reset the
+       rider's dwell and confuse them).
+    2. A new object gets the free frequency that differs most from its NEAREST neighbour's frequency, so
+       boxes side by side flicker as differently as possible (6.67 next to 15 Hz, not next to 8.57 Hz).
+       Without centers it simply takes the first free frequency.
+    """
+    assigned = {tid: previous[tid] for tid in target_ids if tid in previous}
+    for tid in (t for t in target_ids if t not in assigned):
+        free = [f for f in TARGET_FREQS_HZ if f not in assigned.values()]
+        if not free:
+            break
+        assigned = {**assigned, tid: max(free, key=lambda f: _margin_from_nearest(f, tid, assigned, centers))}
+    return assigned
+
+
+def _margin_from_nearest(freq: float, tid: int, assigned: dict[int, float],
+                         centers: dict[int, tuple[float, float]] | None) -> float:
+    """|freq - nearest neighbour's freq|. 0 when there is no position info or no neighbour yet."""
+    if not centers or tid not in centers or not assigned:
+        return 0.0
+    here = centers[tid]
+    neighbors = [other for other in assigned if other in centers]
+    if not neighbors:
+        return 0.0
+    nearest = min(neighbors, key=lambda o: math.dist(here, centers[o]))
+    return abs(freq - assigned[nearest])
 
 
 def steering_offset(bbox: tuple[float, float, float, float], frame_width: int) -> float:
@@ -154,12 +214,14 @@ def run(reader: LatestFrameReader, model, hfov_deg: float, device: str, seconds:
         tracks = detect(model, frame, focal_length_px(frame.shape[1], hfov_deg), device, classes)
         now = time.monotonic()
         first_seen = {**{t.id: now for t in tracks if t.id not in first_seen}, **first_seen}
+        # Rank every candidate (not just 4), so a box skipped for overlapping can be replaced by the next best.
         if ranker is None:
-            targets = pick_targets(tracks, first_seen)
+            ranked = pick_targets(tracks, first_seen, max_n=len(tracks))
         else:  # Gemini suggestions first, then steadiest YOLO objects (see vision/destinations.py)
             from vision.destinations import rank_targets
-            targets = rank_targets(tracks, ranker.latest(), first_seen)
-        freqs = assign_frequencies([t.id for t in targets], freqs)
+            ranked = rank_targets(tracks, ranker.latest(), first_seen, max_n=len(tracks) + MAX_TARGETS)
+        targets = separate_targets(ranked, frame.shape[1])
+        freqs = assign_frequencies([t.id for t in targets], freqs, {t.id: box_center(t.bbox) for t in targets})
         if ord("1") <= key <= ord("4") and key - ord("1") < len(targets):
             selected = targets[key - ord("1")].id
         elif key == ord("0"):

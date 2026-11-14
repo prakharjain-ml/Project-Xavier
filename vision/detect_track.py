@@ -22,6 +22,7 @@ import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -36,7 +37,9 @@ TARGET_FREQS_HZ = tuple(PROTOCOL_FREQS_HZ.values())
 MAX_TARGETS = 4
 DEFAULT_MODEL = os.path.expanduser(os.environ.get("YOLO_MODEL", "~/hp26-models/yolo11n.pt"))
 DEFAULT_HFOV_DEG = 70.0  # horizontal field of view guess for a phone/webcam; calibrate with --hfov
-MIN_CONF = 0.4  # ignore detections YOLO is less sure about
+MIN_CONF = 0.4  # only SHOW objects YOLO is at least this sure about
+TRACK_CONF = 0.1  # but give the tracker everything above this: weak detections keep an object's ID alive
+TRACKER_CONFIG = str(Path(__file__).with_name("bytetrack_chair.yaml"))
 # Minimum empty space between two flickering boxes, as a fraction of frame width. On the 13.6" laptop screen at
 # ~55 cm viewing distance, 5% of the width is ~1.5 cm, about 1.5 degrees of visual angle: enough that staring at
 # one box keeps the neighbour mostly outside the sharp centre of vision. Tune in calibration.
@@ -164,13 +167,17 @@ def steering_offset(bbox: tuple[float, float, float, float], frame_width: int) -
 
 
 def detect(model, frame: np.ndarray, focal_px: float, device: str, classes: list[int] | None) -> list[Track]:
-    result = model.track(frame, persist=True, tracker="bytetrack.yaml", device=device, conf=MIN_CONF,
+    # Filtering at MIN_CONF *before* tracking starved ByteTrack's second stage (low-score matches), so an
+    # object whose score dipped for a frame got a new ID. Track at TRACK_CONF, then show only >= MIN_CONF.
+    result = model.track(frame, persist=True, tracker=TRACKER_CONFIG, device=device, conf=TRACK_CONF,
                          classes=classes, verbose=False)[0]
     if result.boxes is None or result.boxes.id is None:  # no confirmed tracks this frame
         return []
     tracks = []
     for tid, cls, conf, box in zip(result.boxes.id.tolist(), result.boxes.cls.tolist(),
                                    result.boxes.conf.tolist(), result.boxes.xyxy.tolist()):
+        if conf < MIN_CONF:
+            continue  # tracked (keeps its ID) but not shown or offered as a target
         label = result.names[int(cls)]
         tracks.append(Track(int(tid), label, conf, tuple(box), estimate_distance_m(label, box[3] - box[1], focal_px)))
     return tracks

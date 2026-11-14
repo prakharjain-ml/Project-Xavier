@@ -36,6 +36,7 @@ from vision.detect_track import (
     separate_targets,
     steering_offset,
 )
+from vision.destinations import iou
 from vision.gaze import GazeSample, pick_region
 
 log = logging.getLogger("vision.object_select")
@@ -43,6 +44,7 @@ log = logging.getLogger("vision.object_select")
 WINDOW = "look at an object to choose it"
 CANVAS_W, CANVAS_H = 1280, 800  # same canvas as the calibration screen, stretched to full screen
 MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the screen wide and tall
+SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
 RED, YELLOW, GREEN, GREY, CURSOR = (0, 0, 255), (0, 220, 255), (0, 220, 0), (160, 160, 160), (255, 120, 0)
 
 
@@ -51,17 +53,39 @@ class Selection:
     candidate: int | None = None  # object under the gaze right now
     since: float | None = None  # when the gaze landed on it
     confirmed: int | None = None  # last confirmed object (stays until another is confirmed or X cancels)
+    box: tuple[float, float, float, float] | None = None  # candidate's last gaze box (0-1 screen coordinates)
 
 
-def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float = DWELL_S) -> Selection:
-    """Dwell confirmation: same object under the gaze for dwell_s -> confirmed. Looking away restarts the dwell."""
+def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float = DWELL_S,
+                     box: tuple[float, float, float, float] | None = None) -> Selection:
+    """Dwell confirmation: same object under the gaze for dwell_s -> confirmed. Looking away restarts the dwell.
+
+    If the tracker relabels the object under the gaze (new ID, box in the same place: overlap >= SAME_OBJECT_IOU),
+    it is the same object, so the dwell keeps running instead of restarting.
+    """
     if hit is None:
-        return replace(sel, candidate=None, since=None)
+        return replace(sel, candidate=None, since=None, box=None)
     if hit != sel.candidate:
-        return replace(sel, candidate=hit, since=now)
+        same_object = box is not None and sel.box is not None and iou(box, sel.box) >= SAME_OBJECT_IOU
+        if same_object:
+            confirmed = hit if sel.confirmed == sel.candidate else sel.confirmed
+            return replace(sel, candidate=hit, box=box, confirmed=confirmed)
+        return replace(sel, candidate=hit, since=now, box=box)
+    sel = replace(sel, box=box if box is not None else sel.box)
     if now - sel.since >= dwell_s:
         return replace(sel, confirmed=hit)
     return sel
+
+
+def gaze_problem(sample: GazeSample | None, now: float) -> str | None:
+    """Why there is no usable gaze right now (for the summary), or None if gaze is fine."""
+    if sample is None:
+        return "no_sample"
+    if now - sample.t > STALE_INTENT_S:
+        return "stale"
+    if sample.point is not None:
+        return None
+    return "eyes_closed" if sample.closed else "no_face"
 
 
 def dwell_fraction(sel: Selection, now: float, dwell_s: float = DWELL_S) -> float:
@@ -123,6 +147,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     targets: list[Track] = []
     frame, last_t, confirmations = None, None, []
     gaze_frames = total_frames = 0
+    problems: dict[str | None, int] = {}
     start = time.monotonic()
     while seconds is None or time.monotonic() - start < seconds:
         key = cv2.waitKey(1) & 0xFF
@@ -147,7 +172,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
         hit = pick_region(point, boxes, hit) if point is not None else None
         before = sel.confirmed
-        sel = update_selection(sel, hit, now)
+        sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None)
+        problem = gaze_problem(sample, now)
+        problems[problem] = problems.get(problem, 0) + 1
         if sel.confirmed is not None and sel.confirmed != before:
             chosen = next(t for t in targets if t.id == sel.confirmed)
             dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
@@ -160,6 +187,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                   "look at an object for 1.5 s to confirm  |  C re-centre  X cancel  Q quit")
         cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
+    lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
+    log.info("gaze lost because: %s", lost or "never lost")
     return confirmations
 
 

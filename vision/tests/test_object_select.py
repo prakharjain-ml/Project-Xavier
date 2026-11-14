@@ -68,3 +68,29 @@ def test_corrected_point_applies_offset_and_rejects_stale_or_missing():
     assert corrected_point(sample, offset=(0.0, 0.0), now=11.0) is None  # older than 0.5 s
     assert corrected_point(GazeSample(None, True, True, 10.0), offset=(0.0, 0.0), now=10.0) is None
     assert corrected_point(None, offset=(0.0, 0.0), now=10.0) is None
+
+
+def test_dwell_carries_over_when_the_tracker_relabels_the_same_object():
+    box = (0.1, 0.1, 0.4, 0.5)
+    sel = update_selection(Selection(), hit=84, now=0.0, box=box)
+    nudged = (0.11, 0.1, 0.41, 0.5)  # same chair, new ID from the tracker
+    sel = update_selection(sel, hit=130, now=1.0, box=nudged)
+    assert sel.candidate == 130 and sel.since == 0.0  # dwell kept running
+    sel = update_selection(sel, hit=130, now=DWELL_S + 0.01, box=nudged)
+    assert sel.confirmed == 130
+
+
+def test_a_different_object_elsewhere_still_restarts_the_dwell():
+    sel = update_selection(Selection(), hit=84, now=0.0, box=(0.1, 0.1, 0.4, 0.5))
+    sel = update_selection(sel, hit=130, now=1.0, box=(0.6, 0.1, 0.9, 0.5))  # no overlap: really another object
+    assert sel.since == 1.0
+
+
+def test_gaze_problem_names_the_reason():
+    from vision.object_select import gaze_problem
+
+    assert gaze_problem(None, now=1.0) == "no_sample"
+    assert gaze_problem(GazeSample((0.5, 0.5), False, True, 0.0), now=5.0) == "stale"
+    assert gaze_problem(GazeSample(None, False, False, 1.0), now=1.0) == "no_face"
+    assert gaze_problem(GazeSample(None, True, True, 1.0), now=1.0) == "eyes_closed"
+    assert gaze_problem(GazeSample((0.5, 0.5), False, True, 1.0), now=1.0) is None

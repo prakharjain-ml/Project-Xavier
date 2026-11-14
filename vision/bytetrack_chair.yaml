@@ -1,0 +1,10 @@
+# ByteTrack settings for the chair's forward camera (Pixel webcam, ~15-30 FPS, mostly still objects).
+# Changed from Ultralytics' default bytetrack.yaml after a live run reached track #296 in 4 minutes (ID churn
+# reset the gaze dwell): keep lost objects longer, and only start new IDs from confident detections.
+tracker_type: bytetrack
+track_high_thresh: 0.4 # first-stage match: same as what we display (MIN_CONF)
+track_low_thresh: 0.1 # second stage: weak detections may still continue an existing track
+new_track_thresh: 0.5 # a NEW ID needs a confident detection (default 0.25 spawned many short-lived IDs)
+track_buffer: 60 # frames a lost object is remembered (~4 s at 15 FPS; default 30)
+match_thresh: 0.8
+fuse_score: True

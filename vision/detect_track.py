@@ -38,7 +38,9 @@ TARGET_FREQS_HZ = tuple(PROTOCOL_FREQS_HZ.values())
 MAX_TARGETS = 4
 DEFAULT_MODEL = os.path.expanduser(os.environ.get("YOLO_MODEL", "~/hp26-models/yolo11n.pt"))
 # Same detector plus a traced outline per object (drawn instead of boxes, and used to keep routes off objects).
-SEG_MODEL = os.path.expanduser(os.environ.get("YOLO_SEG_MODEL", "~/hp26-models/yolo11n-seg.pt"))
+# The "s" size, not the smallest "n": on the hall test frame (Sat Nov 14) it found both couches at 0.70 and 0.62
+# confidence where "n" gave 0.42 and 0.39 (below MIN_CONF, so they flickered in and out), for 27 ms vs 20 ms a frame.
+SEG_MODEL = os.path.expanduser(os.environ.get("YOLO_SEG_MODEL", "~/hp26-models/yolo11s-seg.pt"))
 DEFAULT_HFOV_DEG = 70.0  # horizontal field of view guess for a phone/webcam; calibrate with --hfov
 CAMERA_CALIBRATION_PATH = "data/raw/camera_calibration.json"  # gitignored; written by the distance calibration
 MIN_CONF = 0.4  # only SHOW objects YOLO is at least this sure about

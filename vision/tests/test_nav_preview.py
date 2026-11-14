@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from vision.nav_preview import direction_label
@@ -17,6 +18,7 @@ def test_direction_label(left, right, label):
 
 
 SHAPE = (360, 640)  # small frame so the planner tests run fast
+FRAME = np.full((*SHAPE, 3), 120, np.uint8)  # one flat colour: everything below the horizon looks like floor
 HORIZON = 119.0  # image row of the horizon for the test camera below (0.89 m high, tilted 10 degrees down)
 
 
@@ -74,7 +76,7 @@ def test_route_without_gemini_is_marked_unverified():
     from vision.route_scene import plan
 
     target = make_track(1, (280, 130, 360, 200))
-    route, verified = plan(SHAPE, [target], target, None, make_view())
+    route, verified = plan(FRAME, [target], target, None, make_view())
     assert route is not None and verified is False
 
 
@@ -83,7 +85,7 @@ def test_route_on_gemini_floor_is_verified_and_stays_off_detected_objects():
 
     target, blocker = make_track(1, (280, 130, 360, 200)), make_track(2, (200, 230, 440, 270), "couch")
     advice = make_advice([whole_floor()])  # Gemini wrongly calls everything floor, including under the couch
-    route, verified = plan(SHAPE, [target, blocker], target, advice, make_view())
+    route, verified = plan(FRAME, [target, blocker], target, advice, make_view())
     assert route is not None and verified is True
     couch = track_mask(blocker, SHAPE)
     assert not any(couch[int(y), int(x)] for x, y in route.points)  # the detector's object wins (C5)
@@ -97,9 +99,9 @@ def test_gemini_no_go_blocks_the_route_but_its_shape_around_the_target_is_ignore
     target = make_track(1, (280, 130, 360, 200))
     around_target = np.array([[260, 110], [380, 110], [380, 240], [260, 240]], np.float32)
     wall = np.array([[0, 215], [639, 215], [639, 250], [0, 250]], np.float32)  # a band right across the floor
-    open_route, _ = plan(SHAPE, [target], target, make_advice([whole_floor()], [("armchair", around_target)]),
+    open_route, _ = plan(FRAME, [target], target, make_advice([whole_floor()], [("armchair", around_target)]),
                          make_view())
-    blocked, _ = plan(SHAPE, [target], target, make_advice([whole_floor()], [("glass wall", wall)]),
+    blocked, _ = plan(FRAME, [target], target, make_advice([whole_floor()], [("glass wall", wall)]),
                       make_view())
     assert open_route is not None  # Gemini's rough shape around the target must not hide the floor in front of it
     assert blocked is None  # nothing gets through a no-go band: no route, not a guess (C4)
@@ -198,20 +200,6 @@ def test_chair_width_in_the_top_view_is_real_metres_not_image_pixels():
     assert np.linalg.norm(pixels[2] - pixels[3]) < 0.5 * np.linalg.norm(pixels[0] - pixels[1])
 
 
-def test_gemini_floor_that_stops_just_short_of_the_bottom_edge_still_gives_a_route():
-    import numpy as np
-
-    from vision.route_scene import plan, snap_to_border
-
-    target = make_track(1, (280, 130, 360, 200))
-    short = np.array([[10, HORIZON + 5], [630, HORIZON + 5], [630, 350], [10, 350]], np.float32)  # ends 10 px high
-    before = short.copy()
-    route, verified = plan(SHAPE, [target], target, make_advice([short]), make_view())
-    assert route is not None and verified is True
-    assert np.array_equal(short, before)  # the polygon passed in was not changed
-    assert snap_to_border(short, SHAPE)[:, 1].max() == SHAPE[0] - 1
-
-
 def test_gemini_route_hints_that_sit_on_the_target_do_not_stop_a_route_being_found():
     import numpy as np
 
@@ -219,7 +207,7 @@ def test_gemini_route_hints_that_sit_on_the_target_do_not_stop_a_route_being_fou
 
     target = make_track(1, (280, 130, 360, 200))
     hints = np.array([[320.0, 340.0], [320.0, 260.0], [320.0, 170.0]])  # the last hint is on the target itself
-    route, _ = plan(SHAPE, [target], target, make_advice([whole_floor()], route=hints), make_view())
+    route, _ = plan(FRAME, [target], target, make_advice([whole_floor()], route=hints), make_view())
     assert route is not None
 
 

@@ -13,15 +13,18 @@ button.
 
 ## Who decides what
 1. Objects: on-device segmentation model (`yolo11n-seg`), every frame. Precise.
-2. Floor and extra no-go zones: Gemini, in a background thread. Measured 2.0 to 9.6 s per answer, and coarse
-   (one rough floor outline, boxes around whole objects), but it sees tables, walls and glass that the detector
-   does not know. Its boxes for objects the detector also found are dropped: the detector's outline is exact.
-3. Route: computed locally on the floor that survives both sources. The free-floor mask is warped to a
+2. Floor: found locally by its colour (`vision/floor_seg.py`). The bottom band of the image is known floor;
+   pixels of similar colour that are connected to it and below the horizon are floor. Gemini's own floor
+   outline was tried first and is not used: on the hall test frame it returned only a strip along the bottom.
+3. Extra no-go zones: Gemini, in a background thread (measured 1.8 to 9.6 s per answer). It boxes things the
+   detector does not know (tables, a cardboard box, walls, glass). Its boxes for objects the detector also
+   found are dropped, because the detector's outline is exact and Gemini's box covers good floor around it.
+4. Route: computed locally on the floor that survives both sources. The free-floor mask is warped to a
    top-down view of the floor in real centimetres (from the camera's height and tilt), the route is planned
    there with the chair's real width, and it is drawn back onto the camera image. Planning in image pixels
    was tried first and was wrong: near the horizon one pixel of height is far more floor than one pixel of
    width. Gemini's suggested route points are only hints, and only those on free floor are used.
-4. Motors: unchanged. The existing local planner and the safety state machine drive the chair. The route on
+5. Motors: unchanged. The existing local planner and the safety state machine drive the chair. The route on
    screen is a preview and is not yet the route the chair drives.
 
 ## Constraints that must not be broken
@@ -38,7 +41,7 @@ button.
 | C9 | STOP is always visible and always works (click or key). | `vision/hud.py`, callers |
 | C10 | The API key stays in `.env`. Frames are downscaled, sent only when scene AI is on, never saved or logged. | `vision/scene_ai.py` |
 | C11 | The screen stays above 15 fps while Gemini works; at most one Gemini call every 3 s. | `vision/scene_ai.py`, `vision/hud.py` |
-| C12 | The screen says where the floor came from: Gemini-checked (solid route) or local estimate, unverified (dashed route). | `vision/hud.py`, `vision/nav_preview.py` |
+| C12 | The screen says whether Gemini's no-go zones for this view were applied: Gemini-checked (solid route) or local estimate, unverified (dashed route). | `vision/hud.py`, `vision/nav_preview.py` |
 
 ## Module contract
 All coordinates are pixels in the working camera frame (x right, y down). Masks are `bool` arrays of shape
@@ -134,4 +137,6 @@ def plan(shape, tracks, target, advice, view) -> tuple[Route | None, bool]   # r
 - Gemini's answer is only valid while the view is still, so it applies while the chair is stopped.
 - With the phone level at 35 in, the nearest floor the camera sees is about 1.7 m away. Tilt it down about
   15 degrees on the chair to see floor from about 1 m.
-- Example render: `docs/img/route_preview_design.jpg`.
+- The colour floor can be fooled by a wall or table the same colour as the floor, a patterned floor, or a
+  hard shadow. On the hall frame it leaked onto a grey coffee table; Gemini's no-go box covered that.
+- Example render (real frame of the hall, couch chosen): `docs/img/route_preview_design.jpg`.

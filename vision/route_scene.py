@@ -15,7 +15,8 @@ import numpy as np
 from vision.destinations import iou
 from vision.detect_track import Track
 from vision.floor import horizon_row, project_floor
-from vision.floor_route import Route, free_floor, half_width_px, local_floor, plan_route, polygons_to_mask
+from vision.floor_route import Route, free_floor, half_width_px, plan_route, polygons_to_mask
+from vision.floor_seg import colour_floor
 from vision.scene_ai import SceneAdvice
 
 CHAIR_HALF_WIDTH_M = 0.3  # half the chair's width: the route keeps this much floor free on each side
@@ -24,7 +25,6 @@ MAX_RANGE_M = 6.0  # plan at most this far ahead (distance estimates and floor d
 HALF_SPAN_M = 3.0  # top view covers this far to the left and to the right
 NEAR_MARGIN = 1.02  # start the top view 2% beyond the nearest visible floor, safely inside the image
 SAME_OBJECT_IOU = 0.4  # a Gemini box overlapping a detected object's box this much is that same object
-BORDER_SNAP_FRAC = 0.05  # a Gemini floor corner within 5% of an image edge is treated as being on that edge
 ROUNDING_SLACK_PX = 3  # pixels of rounding error allowed when a top-view point is mapped back to the image
 
 
@@ -117,19 +117,6 @@ def top_points(points_image: np.ndarray, view: FloorView) -> np.ndarray:
     return cv2.perspectiveTransform(points.reshape(-1, 1, 2), np.linalg.inv(view.to_image)).reshape(-1, 2)
 
 
-def snap_to_border(polygon: np.ndarray, shape: tuple[int, int], margin: float = BORDER_SNAP_FRAC) -> np.ndarray:
-    """Move polygon corners that are almost at the left, right or bottom edge of the image onto that edge.
-
-    Gemini traces the floor roughly and often stops a few pixels short of the picture's edge. The route has
-    to start at the bottom edge, so a floor that ends just above it would mean "no route" every time."""
-    height, width = shape
-    snapped = np.array(polygon, dtype=float).reshape(-1, 2)  # a copy: the caller's polygon is left alone
-    snapped[snapped[:, 0] < margin * width, 0] = 0
-    snapped[snapped[:, 0] > (1 - margin) * width, 0] = width - 1
-    snapped[snapped[:, 1] > (1 - margin) * height, 1] = height - 1
-    return snapped
-
-
 def extra_no_go(no_go: Sequence[tuple[str, np.ndarray]], tracks: Sequence[Track], target: Track) -> list[np.ndarray]:
     """Gemini's no-go shapes for things the detector did NOT find (tables, walls, glass).
 
@@ -147,29 +134,30 @@ def extra_no_go(no_go: Sequence[tuple[str, np.ndarray]], tracks: Sequence[Track]
     return kept
 
 
-def image_free_floor(shape: tuple[int, int], tracks: Sequence[Track], target: Track,
+def image_free_floor(frame: np.ndarray, tracks: Sequence[Track], target: Track,
                      advice: SceneAdvice | None, horizon: float) -> np.ndarray:
-    """Free floor in the camera image. Objects from the detector are always removed (C5). Without valid Gemini
-    advice the floor is the local estimate (everything below the horizon), which knows nothing about tables
-    or walls."""
+    """Free floor in the camera image.
+
+    The floor itself is found by colour (vision/floor_seg.py). Objects from the detector are always removed
+    (C5). Valid Gemini advice removes more: its no-go zones for things the detector does not know. Gemini's
+    own floor outline is not used: it proved too rough (a strip along the bottom edge on the hall test frame)."""
+    shape = frame.shape[:2]
     objects = np.zeros(shape, bool)
     for t in tracks:
         objects = objects | track_mask(t, shape)
-    if advice is None:
-        return free_floor(local_floor(shape, horizon), objects, np.zeros(shape, bool))
-    no_go = polygons_to_mask(extra_no_go(advice.no_go, tracks, target), shape)
-    floor = polygons_to_mask([snap_to_border(poly, shape) for poly in advice.floor], shape)
-    return free_floor(floor, objects, no_go)
+    no_go = np.zeros(shape, bool) if advice is None else polygons_to_mask(extra_no_go(advice.no_go, tracks, target), shape)
+    return free_floor(colour_floor(frame, objects, horizon), objects, no_go)
 
 
-def plan(shape: tuple[int, int], tracks: Sequence[Track], target: Track, advice: SceneAdvice | None,
+def plan(frame: np.ndarray, tracks: Sequence[Track], target: Track, advice: SceneAdvice | None,
          view: FloorView) -> tuple[Route | None, bool]:
-    """Route to the target on free floor (in camera-image pixels), and whether Gemini checked that floor (C12).
+    """Route to the target on free floor (in camera-image pixels), and whether Gemini's no-go zones for this
+    view were applied (C12).
 
     Planned in the top view with the chair's real width, then mapped back onto the image. Any route point that
     does not land on free floor in the image means no route at all (C1, C4)."""
-    verified = advice is not None
-    free = image_free_floor(shape, tracks, target, advice, view.horizon)
+    shape, verified = frame.shape[:2], advice is not None
+    free = image_free_floor(frame, tracks, target, advice, view.horizon)
     via = None
     if advice is not None and advice.target_id == target.id and len(advice.route):
         # Gemini's suggested points are hints. Keep only those that are on free floor in the image (it often

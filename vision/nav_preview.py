@@ -9,7 +9,8 @@ The mouse stands in for the rider's eyes: rest it on an object for 1.5 s to choo
 real gaze screen). Click STOP or press S to clear the destination. Q / ESC quits. Nothing is sent to any motor.
 
 How the route is made (rules in docs/ROUTE_REQUIREMENTS.md): objects come from the segmentation model, floor
-and extra no-go zones come from Gemini in the background, and the route is planned locally on what is left.
+is found by its colour, extra no-go zones come from Gemini in the background, and the route is planned locally
+on what is left.
 The existing drive planner's command is only logged; the on-screen route is not yet the route the chair drives.
 """
 
@@ -67,7 +68,7 @@ def status_line(target: Track | None, route: Route | None, verified: bool, ai_st
     if route is None:
         return f"Stopped · No safe route to the {target.label}"
     if verified:
-        return f"Stopped · Route to the {target.label} on Gemini-checked floor · Awaiting confirmation"
+        return f"Stopped · Route to the {target.label} · Gemini-checked floor · Awaiting confirmation"
     waiting = "checking the floor with Gemini" if ai_status == "analysing" else "local floor estimate"
     return f"Stopped · Route to the {target.label} is unverified ({waiting})"
 
@@ -159,7 +160,7 @@ def run(reader, model, classes, hfov: float, seconds: float | None, cam_h: float
         if target is not None:
             if advisor is not None and (advice is None or advice.target_id != target.id):
                 advisor.submit(frame, now, target.id, target.label, target.bbox)  # never blocks; rate-limited inside
-            route, verified = plan((h, w), tracks, target, advice, floor_view(w, h, hfov, cam_h, pitch))
+            route, verified = plan(frame, tracks, target, advice, floor_view(w, h, hfov, cam_h, pitch))
             nav, wheels, arrived = nav_step(nav, target, tracks, w, hfov, distance_cm=None, cfg=cfg)
         else:
             nav = NavState()
@@ -227,10 +228,12 @@ def main(argv: list[str] | None = None) -> int:
     except (RuntimeError, FileNotFoundError, ValueError) as error:
         log.error("%s", error)
         return 2
-    has_outlines = os.path.exists(SEG_MODEL)
-    if not has_outlines:
-        log.warning("segmentation model %s not found: objects get corner brackets instead of outlines", SEG_MODEL)
-    model = YOLO(SEG_MODEL if has_outlines else DEFAULT_MODEL)
+    try:
+        model = YOLO(SEG_MODEL)  # Ultralytics downloads the weights on first use if the file is missing
+    except Exception as error:  # offline and not downloaded yet: plain detector, brackets instead of outlines
+        log.warning("segmentation model %s unavailable (%s): objects get corner brackets, not outlines",
+                    SEG_MODEL, str(error)[:80])
+        model = YOLO(DEFAULT_MODEL)
     client = make_client() if args.scene_ai == "gemini" else None
     advisor = SceneAdvisor(client) if client is not None else None
     if args.scene_ai == "gemini" and advisor is None:

@@ -5,6 +5,7 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 
 ## Team board (owner: Prakhar)
 - Current phase: 0 - Prep | Next gate: Gate 0 (all laptops pass import + rules test)
+- Saturday plan: `docs/GAMEPLAN_SAT.md` (status table, first 30 min checklist, schedule, decisions for 11 am). Overnight work is on local branch `prakhar/overnight-mode1` (not pushed).
 - Last sync: - | Next sync: Fri 8:00 pm kickoff
 - Gate log:
   - Gate 0: [x] Prakhar (toolchain + rules + OpenBCI GUI + YOLO cache + ffmpeg verified) [ ] Keshav [ ] Pratosh [ ] Vani

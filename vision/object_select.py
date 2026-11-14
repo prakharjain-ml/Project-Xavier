@@ -23,8 +23,10 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from control.goto import NavState, nav_step
+from control.state_machine import ControlInputs, ControllerState, step
 from shared.latest import drain_newest
-from shared.protocol import DWELL_S, STALE_INTENT_S
+from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, Target
 from vision.detect_track import (
     DEFAULT_MODEL,
     MAX_TARGETS,
@@ -80,6 +82,13 @@ def update_selection(sel: Selection, hit: int | None, now: float, dwell_s: float
     if (confirm and looked >= MIN_LOOK_S) or (dwell_s is not None and looked >= dwell_s):
         return replace(sel, confirmed=hit)
     return sel
+
+
+def drive_intent(sel: Selection, hit: int | None, targets: list[Track]) -> Target:
+    """Hold-to-move (decision D1) for object mode: FWD only while the rider keeps looking at the CONFIRMED object
+    and it is still in view. Looking away, losing the object, or no confirmation -> NONE -> the chair stops."""
+    visible = any(t.id == sel.confirmed for t in targets)
+    return Target.FWD if sel.confirmed is not None and visible and hit == sel.confirmed else Target.NONE
 
 
 def gaze_problem(sample: GazeSample | None, now: float) -> str | None:
@@ -163,8 +172,9 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
 
 
 def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None,
-        tracker_alive=lambda: True, confirm_mode: str = "dwell", jaw=None) -> list[str]:
+        tracker_alive=lambda: True, confirm_mode: str = "dwell", jaw=None, driver=None) -> list[str]:
     dwell_s = confirm_settings(confirm_mode)
+    ctrl, nav, drive_note = ControllerState(), NavState(), ""
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
     targets: list[Track] = []
@@ -210,16 +220,43 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                     f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
             log.info(line)
             confirmations.append(line)
+        if driver is not None:
+            sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
+                                                    confirmations)
         total_frames += 1
         gaze_frames += point is not None
         how = {"dwell": "look for 1.5 s", "key": "look, then press J", "jaw": "look, then CLENCH"}[confirm_mode]
         status = ("NO GAZE (face not seen / eyes closed)" if point is None else
-                  f"{how} to confirm  |  C re-centre  X cancel  Q quit")
+                  f"{how} to confirm  |  C re-centre  X cancel  Q quit") + drive_note
         cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, point, now, status, dwell_s))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")
     return confirmations
+
+
+def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
+               nav: NavState, now: float, log_lines: list[str]):
+    """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
+    whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it."""
+    target = next((t for t in targets if t.id == sel.confirmed), None)
+    wheels = (0, 0)
+    if target is not None:
+        nav, wheels, arrived = nav_step(nav, target, targets, frame_w, hfov, driver.distance_cm())
+        if arrived:
+            line = f"ARRIVED at {target.label} #{target.id}"
+            log.info(line)
+            log_lines.append(line)
+            sel, nav, wheels = replace(sel, confirmed=None), NavState(), (0, 0)
+    else:
+        nav = NavState()
+    intent_target = drive_intent(sel, hit, targets)
+    inputs = ControlInputs(intent=Intent(intent_target, 1.0 if intent_target != Target.NONE else 0.0, t=now),
+                           distance_cm=driver.distance_cm())
+    ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels)
+    driver.send(command)
+    note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
+    return sel, ctrl, nav, note
 
 
 def show_text(cv2, text: str) -> None:
@@ -289,6 +326,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="--confirm jaw: synthetic = practice (J injects a fake clench)")
     parser.add_argument("--jaw-port", default=None, help="OpenBCI dongle port, e.g. /dev/cu.usbserial-DM0xxxxx")
     parser.add_argument("--jaw-channels", default="1", help="Cyton channels with an electrode, e.g. 1 or 1,2")
+    parser.add_argument("--drive", action="store_true", help="drive to the confirmed object (needs --mock or --serial)")
+    port = parser.add_mutually_exclusive_group()
+    port.add_argument("--mock", action="store_true", help="--drive into a fake serial port (no hardware)")
+    port.add_argument("--serial", metavar="PORT", help="--drive: ESP32 bridge port (HUMANS ONLY, wheels up first)")
     parser.add_argument("--skip-calibration", action="store_true",
                         help="reuse the saved calibration (only if you have not moved since)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -298,6 +339,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.skip_calibration and not calibration_ready(backend, args.calibration):
         log.error("no gaze calibration for the %s tracker: run `%s` first", backend, calibration_hint(backend))
         return 2
+    if args.drive and not (args.mock or args.serial):
+        log.error("--drive needs --mock (no hardware) or --serial PORT")
+        return 2
+    if args.serial:
+        from motors.driver import looks_like_openbci_dongle
+
+        if looks_like_openbci_dongle(args.serial):
+            log.error("%s looks like the OpenBCI dongle, not the ESP32: refusing to send motor commands", args.serial)
+            return 2
     import cv2
     from ultralytics import YOLO
 
@@ -328,7 +378,14 @@ def main(argv: list[str] | None = None) -> int:
     model = YOLO(DEFAULT_MODEL)
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    jaw = None
+    jaw, driver = None, None
+    if args.drive:
+        from motors.driver import MotorDriver, open_serial
+        from motors.mock_serial import MockSerial
+
+        mock = MockSerial() if args.mock else None
+        driver = MotorDriver((lambda: mock) if mock else (lambda: open_serial(args.serial)))
+        driver.start()  # streams STOP lines from now on
     try:
         if args.confirm == "jaw":
             jaw = start_jaw(cv2, args)
@@ -336,8 +393,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         confirmations = run(cv2, reader, model, relevant_class_ids(model.names), gaze_queue, args.hfov, args.device,
                             args.seconds, tracker_alive=lambda: process.poll() is None, confirm_mode=args.confirm,
-                            jaw=jaw)
+                            jaw=jaw, driver=driver)
     finally:
+        if driver is not None:
+            driver.stop()  # final explicit STOP lines
         if jaw is not None:
             jaw.stop()
         gaze_stop.set()

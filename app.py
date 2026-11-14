@@ -31,7 +31,7 @@ import pygame
 from control.state_machine import ControlInputs, ControllerState, step
 from interface.flicker import KEYS, offer_latest, open_display, run_flicker, show_warning
 from interface.timing import FrameStats
-from motors.driver import MotorDriver, open_serial
+from motors.driver import MotorDriver, looks_like_openbci_dongle, open_serial
 from motors.mock_serial import MockSerial
 from shared.latest import drain_newest
 from shared.protocol import (
@@ -52,13 +52,6 @@ log = logging.getLogger("app")
 
 ARROW_TARGETS = {pygame.K_UP: Target.FWD, pygame.K_DOWN: Target.BACK,
                  pygame.K_LEFT: Target.LEFT, pygame.K_RIGHT: Target.RIGHT}
-OPENBCI_DONGLE_MARK = "usbserial-DM"  # FTDI chip in the OpenBCI dongle; motor lines must never go there
-
-
-def looks_like_openbci_dongle(port: str) -> bool:
-    return OPENBCI_DONGLE_MARK in port
-
-
 class OperatorKeys:
     """Teammate keys in every input mode: SPACE = operator E-STOP, R = re-arm. One-shot presses, thread-safe
     (key events arrive on the main thread, the control thread consumes them)."""

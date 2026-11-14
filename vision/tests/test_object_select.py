@@ -171,3 +171,87 @@ def test_confirm_event_sources():
     practice.mode = "synthetic"
     confirm_event("jaw", ord("j"), practice)
     assert practice.injected  # practice board: J injects a fake clench into the real detector
+
+
+def test_drive_intent_only_while_looking_at_the_confirmed_visible_target():
+    from shared.protocol import Target as T
+    from vision.object_select import drive_intent
+
+    targets = [track(4, (900, 300, 1100, 700))]
+    sel = Selection(candidate=4, since=0.0, confirmed=4)
+    assert drive_intent(sel, hit=4, targets=targets) == T.FWD
+    assert drive_intent(sel, hit=None, targets=targets) == T.NONE  # looked away: hold-to-move says stop
+    assert drive_intent(sel, hit=4, targets=[]) == T.NONE  # target lost from view: stop
+    assert drive_intent(Selection(candidate=4, since=0.0), hit=4, targets=targets) == T.NONE  # not confirmed yet
+
+
+def test_end_to_end_look_confirm_hold_then_drive_lines_reach_the_port(monkeypatch):
+    """Real selection + planner + state machine + driver into MockSerial; only camera, YOLO and gaze are faked."""
+    import queue
+    import time
+    import types
+
+    import cv2 as real_cv2
+    import numpy as np
+
+    import vision.object_select as osel
+    from motors.driver import MotorDriver
+    from motors.mock_serial import MockSerial
+
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
+    monkeypatch.setattr(osel, "detect", lambda *a, **k: [chair])
+
+    class Frames:
+        def latest(self):
+            return np.zeros((1080, 1920, 3), np.uint8), time.monotonic()
+
+    class GazeAtChair:  # looks at the chair's centre the whole time
+        def __init__(self):
+            self.flip = False
+
+        def get_nowait(self):
+            self.flip = not self.flip
+            if self.flip:
+                return GazeSample((0.5, 0.5), False, True, time.monotonic())
+            raise queue.Empty
+
+    calls = {"n": 0, "j_at": None}
+
+    def wait_key(_ms):
+        calls["n"] += 1
+        time.sleep(0.01)
+        if calls["n"] == 60:  # press J (confirm) after ~0.6 s of looking
+            calls["j_at"] = time.monotonic()
+            return ord("j")
+        return 255
+
+    fake_cv2 = types.SimpleNamespace(**{n: getattr(real_cv2, n) for n in dir(real_cv2) if not n.startswith("_")})
+    fake_cv2.imshow, fake_cv2.waitKey = (lambda *a: None), wait_key
+    class TimedPort(MockSerial):
+        def __init__(self):
+            super().__init__()
+            self.times = []
+
+        def write(self, data):
+            self.times.append(time.monotonic())
+            return super().write(data)
+
+    port = TimedPort()
+    driver = MotorDriver(lambda: port)
+    driver.start()
+    try:
+        confirmations = osel.run(fake_cv2, Frames(), model=None, classes=None, gaze_queue=GazeAtChair(), hfov=85.5,
+                                 device="cpu", seconds=3.5, confirm_mode="key", driver=driver)
+    finally:
+        driver.stop()
+    assert any("CONFIRMED chair #4" in c for c in confirmations)
+    drive = [ln for ln in port.lines() if ln.startswith("C,")]
+    assert drive, "no drive lines reached the port"
+    left, right = map(int, drive[-1].split(",")[2:])
+    assert left > 0 and right > 0  # driving toward the centred chair
+    first_drive = next(i for i, ln in enumerate(port.lines()) if ln.startswith("C,"))
+    from shared.protocol import DWELL_S as HOLD
+
+    # The safety state machine is in the path: wheels move only after the 1.5 s hold that follows the confirm.
+    assert port.times[first_drive] - calls["j_at"] >= HOLD - 0.15
+    assert all(ln.startswith("S,") for ln in port.lines()[-3:])  # explicit stop when the session ends

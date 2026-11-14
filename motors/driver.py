@@ -30,6 +30,13 @@ REOPEN_S = 1.0  # retry opening a lost port this often
 FINAL_STOP_LINES = 5  # stop lines sent when the driver shuts down
 
 
+OPENBCI_DONGLE_MARK = "usbserial-DM"  # FTDI chip in the OpenBCI dongle; motor lines must never go there
+
+
+def looks_like_openbci_dongle(port: str) -> bool:
+    return OPENBCI_DONGLE_MARK in port
+
+
 def open_serial(port_name: str) -> Any:
     """HUMAN-RUN PATH ONLY: open the ESP32's USB serial port. Non-blocking reads; short write timeout."""
     import serial  # pyserial; imported here so tests never touch it

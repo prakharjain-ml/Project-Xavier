@@ -153,6 +153,9 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~10:04 PM - Claude Code (Opus 5.5), for Prakhar (Gemini off by default)
+- `vision/nav_preview.py`: `--scene-ai` now defaults to `off` (A* on the locally found floor only); `--scene-ai gemini` still works for showing the Gemini part. The gaze screen and drive program (`vision/object_select.py`) never called Gemini, so its lag was not Gemini (it was detection on every frame, fixed earlier tonight).
+
 ### Sat Nov 14, ~9:47 PM - Claude Code (Opus 5.5), for Prakhar (steadier cursor, gliding outlines)
 - Prakhar, live: "the cursor shakes around a lot", the screen should be "much much smoother". EyeTrax already applies Kalman + EMA (0.25); still shaky.
 - Done (`vision/smoothing.py`): One Euro filter on the gaze point (min cutoff 0.3 Hz, beta 1.0). Synthetic test (2% shake, 30 Hz): fixation shake cut to 0.23 of raw, a full-screen glance lands in 0.10 s. The smoothed point drives both the cursor and which object is under it. Outlines glide 35% of the way to each new detection per screen update instead of jumping 7 times a second (drawing only).

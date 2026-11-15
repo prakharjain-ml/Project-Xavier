@@ -2,7 +2,7 @@
 
     python -m vision.nav_preview                      # forward camera found automatically (the one without a face)
     python -m vision.nav_preview --image room.png     # run on a photo instead of a camera
-    python -m vision.nav_preview --scene-ai off       # no Gemini: local floor estimate, route drawn dashed
+    python -m vision.nav_preview --scene-ai gemini    # also ask Gemini for obstacles the detector misses
     python -m vision.nav_preview --cam-height 0.9 --cam-pitch 20   # where the phone sits on the chair
 
 The mouse stands in for the rider's eyes: rest it on an object for 1.5 s to choose it (same dwell rule as the
@@ -210,8 +210,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seconds", type=float, default=None)
     parser.add_argument("--cam-height", type=float, default=CAM_HEIGHT_M, help="camera height above floor (m)")
     parser.add_argument("--cam-pitch", type=float, default=CAM_PITCH_DEG, help="camera tilt down (degrees)")
-    parser.add_argument("--scene-ai", choices=("gemini", "off"), default="gemini",
-                        help="gemini = send downscaled frames to Gemini to find the floor; off = local estimate only")
+    # Off by default (Sat Nov 14, Prakhar): the route is planned locally with A*; Gemini is opt-in for showing it.
+    parser.add_argument("--scene-ai", choices=("gemini", "off"), default="off",
+                        help="off = A* on the locally found floor only (default); gemini = also ask Gemini for no-go zones")
     parser.add_argument("--cursor", help="fixed cursor as fractions x,y (instead of the mouse)")
     parser.add_argument("--save", help="write the last rendered screen to this PNG on exit")
     parser.add_argument("--no-window", action="store_true", help="render without opening a window (use with --save)")

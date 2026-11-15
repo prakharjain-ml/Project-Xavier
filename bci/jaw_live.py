@@ -36,6 +36,7 @@ log = logging.getLogger("bci.jaw_live")
 
 RELAX_S, CLENCH_S, CLENCH_REST_S, N_CLENCHES = 10.0, 1.0, 2.0, 3
 WIFI_IP, WIFI_PORT = "192.168.4.1", 6677
+LEVEL_LOG_EVERY_S = 1.0  # the jaw log gets one line a second with the live level
 DEAD_WARN_EVERY_S = 5.0  # while the live signal is flat or railed, say so in the log this often
 
 
@@ -196,7 +197,10 @@ class JawConfirmSource:
                                                 synthetic_clench=self.mode == "synthetic"))
             show("Relax")
             read(self._board, self._rows, self._fs, rest_s)
-        return self._stream.finish_calibration()
+        threshold = self._stream.finish_calibration()
+        log.info("jaw calibration OK: relaxed -> clench ratio %.1fx, threshold %.2f uV, clench level %.2f uV",
+                 self._stream.clench_ratio, threshold, self._stream.clench_level)
+        return threshold
 
     def start(self) -> None:
         self._thread.start()
@@ -244,7 +248,8 @@ class JawConfirmSource:
             self.error = error
 
     def _read_loop(self) -> None:
-        warned_at = float("-inf")
+        warned_at = level_logged_at = float("-inf")
+        clenches = 0
         while not self._stop.is_set():
             time.sleep(0.05)
             data = self._board.get_board_data()[self._rows]
@@ -254,7 +259,16 @@ class JawConfirmSource:
                 data = data + fake_clench(self._fs, data.shape[1] / self._fs, len(self._rows))
             for _ in self._stream.push(data):
                 self._events.put(time.monotonic())
+                clenches += 1
+                level = self._stream.level_ratio
+                log.info("JAW CLENCH RECOGNISED #%d (level %s of the threshold)", clenches,
+                         "?" if level is None else f"{level:.2f}x")
             problem, now = self._stream.signal_problem, time.monotonic()
+            if now - level_logged_at >= LEVEL_LOG_EVERY_S:  # a heartbeat, so a quiet log still shows the signal was live
+                level_logged_at = now
+                level = self._stream.level_ratio
+                log.info("jaw level %s of the threshold%s", "(no signal)" if level is None else f"{level:.2f}x",
+                         "  <- above: clenching" if level is not None and level >= 1.0 else "")
             if problem is not None and now - warned_at >= DEAD_WARN_EVERY_S:
                 warned_at = now
                 log.warning("jaw signal is dead: %s; clenches cannot confirm until it recovers", problem)

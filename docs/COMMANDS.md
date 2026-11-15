@@ -71,8 +71,15 @@ Find the ESP32 port:
 ls /dev/cu.usbmodem*
 ```
 
+Jaw clench not working? Test the headset alone (over the OpenBCI Wi-Fi): double-click `Start jaw-flash.command`.
+It closes the OpenBCI GUI, waits until you join the 'OpenBCI-xxxx' Wi-Fi, then shows a black screen that flashes
+WHITE for 1 s on each clench. Keep your jaw relaxed for the first 3 s. The first RED line on screen is where it
+breaks. UP/DOWN = threshold, R = re-measure rest, ESC = quit.
+
 ## After a run
 Every run writes a log file to `data/raw/sessions/`. Tell Claude "check the last session" and it can read it:
+- A second file, `..._jaw.log`, has only the headset: calibration result, the live level once a second, and
+  `JAW CLENCH RECOGNISED #n` for every clench the detector counted.
 - `JAW CLENCH detected` = the headset saw a clench.
 - `CONFIRMED chair #4 ...` = that clench (or dwell) chose an object.
 - `state STOPPED -> DWELLING -> MOVING` = the chair would drive.

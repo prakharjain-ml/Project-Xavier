@@ -563,7 +563,11 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         handlers=[logging.StreamHandler(), logging.FileHandler(log_path)])
-    log.info("session log: %s", log_path)
+    # A second file with only the headset's lines: calibration, a level heartbeat every second, every clench.
+    jaw_log = logging.FileHandler(log_path.replace(".log", "_jaw.log"))
+    jaw_log.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    logging.getLogger("bci.jaw_live").addHandler(jaw_log)
+    log.info("session log: %s (headset only: %s)", log_path, jaw_log.baseFilename)
     parser = argparse.ArgumentParser(description="Choose a real object by looking at it.")
     parser.add_argument("--source", default="auto", help="forward camera index/URL, or auto (= not the face camera)")
     parser.add_argument("--eye-camera", default="auto", help="camera that sees the rider's face, or auto")

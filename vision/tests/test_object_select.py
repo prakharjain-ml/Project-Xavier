@@ -442,6 +442,36 @@ def test_frozen_forward_camera_stops_the_chair_and_the_screen_says_so(monkeypatc
     assert "CAMERA FROZEN" in final_status and "STOPPED" in final_status
 
 
+class _JawOnJ:
+    """A headset stand-in: J counts as a clench. Used where SPACE must stay the emergency stop (in key mode
+    SPACE confirms and S stops; see test_in_key_mode_space_confirms_and_s_is_the_emergency_stop)."""
+    mode, error = "synthetic", None  # practice board: the screen turns a J press into a clench
+
+    def __init__(self):
+        self.pending = False
+
+    def inject_fake_clench(self, seconds=0.6):
+        self.pending = True
+
+    def alive(self):
+        return True
+
+    def level(self):
+        return 0.1
+
+    def take(self):
+        fired, self.pending = self.pending, False
+        return fired
+
+
+def test_in_key_mode_space_confirms_and_s_is_the_emergency_stop():
+    from vision.object_select import KEY_MODE_STOP_KEY, STOP_KEY, confirm_event, stop_key
+
+    assert confirm_event("key", SPACE, None) and confirm_event("key", ord("j"), None)
+    assert stop_key("key") == KEY_MODE_STOP_KEY == ord("s")
+    assert stop_key("jaw") == stop_key("dwell") == STOP_KEY == SPACE
+
+
 def test_space_latches_an_emergency_stop_until_r_rearms(monkeypatch):
     """Audit finding 3: SPACE did nothing while driving and E_STOP could not be reached in this program."""
     # Arrange: SPACE while the wheels turn; the rider keeps looking at the chair the whole time; later R.
@@ -455,7 +485,7 @@ def test_space_latches_an_emergency_stop_until_r_rearms(monkeypatch):
         yield from s.until(lambda: s.moving_lines(after=s.marks["rearm"]), "the chair to move again after re-arm")
 
     # Act
-    s = run_drive_session(monkeypatch, [CHAIR], script)
+    s = run_drive_session(monkeypatch, [CHAIR], script, confirm_mode="jaw", jaw=_JawOnJ())
 
     # Assert: stopped and E_STOP on screen from SPACE until R; after R a fresh 1.5 s hold, then it moves again.
     space_t, rearm_t = s.marks["space"], s.marks["rearm"]

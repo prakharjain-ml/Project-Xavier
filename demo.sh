@@ -6,7 +6,7 @@
 #   ./demo.sh mock     jaw + route following + chevrons, motor commands to a FAKE port (nothing moves)
 #   ./demo.sh chair    jaw + route following on the REAL hoverboard (wheels up first, kill key in hand)
 #   ./demo.sh chair-dwell   as chair, but confirm by looking (backup if the headset fails)
-#   ./demo.sh chair-key     REAL hoverboard, press J to confirm (stands in for the jaw clench; no headset)
+#   ./demo.sh chair-key     REAL hoverboard, press SPACE to confirm (no headset); S = emergency stop
 #   ./demo.sh mock-key      as chair-key but to a FAKE port (nothing moves)
 #   ./demo.sh preview  mouse preview of the route (no eyes, no headset, no motors)
 #
@@ -24,13 +24,25 @@ JAW=(--confirm jaw --jaw-board wifi --jaw-channels "${JAW_CHANNELS:-1,2}")
 ROUTE=(--follow route --cam-height "${CAM_HEIGHT:-0.89}" --cam-pitch "${CAM_PITCH:-0}")
 
 esp32_port() {
-  local port
-  port=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1 || true)
-  if [ -z "$port" ]; then
-    echo "No ESP32 found (no /dev/cu.usbmodem*). Plug it in by USB and close the Arduino Serial Monitor." >&2
+  # Keshav's ESP32 talks through its "COM" USB-C port (CH343 chip): /dev/cu.wchusbserial... or /dev/cu.usbserial-...
+  # Set ESP32_PORT yourself to skip the search:  ESP32_PORT=/dev/cu.wchusbserial1420 ./demo.sh chair-key
+  if [ -n "${ESP32_PORT:-}" ]; then echo "$ESP32_PORT"; return; fi
+  local found
+  found=$(ls /dev/cu.wchusbserial* /dev/cu.usbserial-* /dev/cu.usbmodem* 2>/dev/null || true)
+  local count
+  count=$(printf '%s' "$found" | grep -c . || true)
+  if [ "$count" -eq 0 ]; then
+    echo "No ESP32 found. Plug a DATA cable into the ESP32's port labelled COM (not USB), close the Arduino Serial Monitor." >&2
+    echo "Still nothing? Install the WCH CH34x driver (see firmware/chair_control/README.md, macOS)." >&2
     exit 2
   fi
-  echo "$port"
+  if [ "$count" -gt 1 ]; then
+    echo "More than one USB serial device is plugged in, so the ESP32 cannot be picked safely:" >&2
+    echo "$found" | sed 's/^/   /' >&2
+    echo "Unplug the others (the CP2102, a dongle), or name it: ESP32_PORT=/dev/cu.xxx ./demo.sh chair-key" >&2
+    exit 2
+  fi
+  echo "$found"
 }
 
 need_pixel() {

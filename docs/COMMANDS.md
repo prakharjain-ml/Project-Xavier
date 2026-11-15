@@ -39,7 +39,7 @@ REAL hoverboard, jaw confirm (wheels up first, kill key in hand):
 ./demo.sh chair
 ```
 
-REAL hoverboard, press J to confirm (J stands in for the jaw clench, no headset needed; wheels up first):
+REAL hoverboard, press SPACE to confirm (no headset needed; S = emergency stop in this mode; wheels up first):
 ```
 ./demo.sh chair-key --skip-calibration
 ```
@@ -76,9 +76,14 @@ Phone mounted on the chair: give its height (m) and downward tilt (degrees):
 CAM_HEIGHT=0.9 CAM_PITCH=20 ./demo.sh chair
 ```
 
-Find the ESP32 port:
+Find the ESP32 port (plug into the ESP32's COM port, not USB):
 ```
-ls /dev/cu.usbmodem*
+ls /dev/cu.wchusbserial* /dev/cu.usbserial-* /dev/cu.usbmodem*
+```
+
+Name the ESP32 port yourself (when several serial devices are plugged in):
+```
+ESP32_PORT=/dev/cu.wchusbserial1420 ./demo.sh chair-key --skip-calibration
 ```
 
 Jaw clench not working? Test the headset alone (over the OpenBCI Wi-Fi): double-click `Start jaw-flash.command`.
@@ -99,6 +104,6 @@ Every run writes a log file to `data/raw/sessions/`. Tell Claude "check the last
 | --- | --- |
 | C | re-centre the gaze (look at the "+" first) |
 | X | cancel the destination |
-| SPACE | emergency stop (stays stopped) |
+| SPACE | emergency stop (stays stopped). In the -key modes SPACE confirms and S is the emergency stop |
 | R | re-arm after SPACE |
 | Q | quit (prints the fps and gaze numbers) |

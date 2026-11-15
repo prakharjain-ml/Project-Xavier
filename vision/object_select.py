@@ -82,6 +82,8 @@ OBSTACLE_SAMPLE_M = 0.2  # obstacle points this far apart across an object (less
 OBSTACLE_DEPTH_M = 0.4  # an object is treated as this deep (a second row of points behind its front)
 STOP_BEFORE_TARGET_M = 0.4  # the route ends this far before the target's estimated position
 STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
+# In key mode (no headset) SPACE confirms instead, so the emergency stop moves to S. See stop_key().
+KEY_MODE_STOP_KEY = ord("s")
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
 NAV_STEP_TAKES_FRAME_H = "frame_h" in inspect.signature(nav_step).parameters
@@ -154,7 +156,8 @@ def gaze_problem(sample: GazeSample | None, now: float) -> str | None:
     return "eyes_closed" if sample.closed else "no_face"
 
 
-CONFIRM_KEY = ord("j")  # "J for jaw": stand-in for a clench. Not SPACE, which is EMERGENCY STOP in app.py.
+CONFIRM_KEY = ord("j")  # "J for jaw": stand-in for a clench.
+SPACE = 32  # in key mode SPACE also confirms (Prakhar, Sun Nov 15: no headset for now, SPACE to confirm)
 
 
 def confirm_settings(mode: str) -> float | None:
@@ -166,7 +169,7 @@ def confirm_event(mode: str, key: int, jaw) -> bool:
     """Did the rider confirm this frame? 'key': J pressed. 'jaw': a clench from the headset (on the practice
     board, J injects a fake clench into the real detector instead)."""
     if mode == "key":
-        return key == CONFIRM_KEY
+        return key in (CONFIRM_KEY, SPACE)
     if mode == "jaw" and jaw is not None:
         if key == CONFIRM_KEY and jaw.mode == "synthetic":
             jaw.inject_fake_clench()
@@ -204,16 +207,22 @@ def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now:
     return (min(1.0, max(0.0, sample.point[0] + offset[0])), min(1.0, max(0.0, sample.point[1] + offset[1])))
 
 
+def stop_key(confirm_mode: str) -> int:
+    """The operator's emergency-stop key: SPACE, except in key mode where SPACE confirms and S stops."""
+    return KEY_MODE_STOP_KEY if confirm_mode == "key" else STOP_KEY
+
+
 def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look_away: bool, driving: bool) -> str:
     """Text at the bottom of the screen, most urgent first: a frozen camera, then no gaze, then what to do next."""
     if frame_age_s > STALE_INTENT_S:
         return f"CAMERA FROZEN (no new picture for {frame_age_s:.1f} s)"
     if not has_gaze:
         return "NO GAZE (face not seen / eyes closed)"
-    keys = ("SPACE stop  R re-arm  " if driving else "") + "C re-centre  X cancel  Q quit"
+    stop_name = "S" if confirm_mode == "key" else "SPACE"
+    keys = (f"{stop_name} stop  R re-arm  " if driving else "") + "C re-centre  X cancel  Q quit"
     if must_look_away:
         return f"look away, then back, to choose this object again  |  {keys}"
-    how = {"dwell": "look for 1.5 s", "key": "look, then press J", "jaw": "look, then CLENCH"}[confirm_mode]
+    how = {"dwell": "look for 1.5 s", "key": "look, then press SPACE", "jaw": "look, then CLENCH"}[confirm_mode]
     return f"{how} to confirm  |  {keys}"
 
 
@@ -408,7 +417,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             worker.set_destination(sel.confirmed if follow == "route" else None)  # plan for it from the next frame
             if driver is not None:
                 # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
-                stops = (StopRequest(StopSource.OPERATOR, now),) if key == STOP_KEY else ()
+                stops = (StopRequest(StopSource.OPERATOR, now),) if key == stop_key(confirm_mode) else ()
                 sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
                                                         confirmations, obstacles=tracks, frame_h=frame.shape[0],
                                                         frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,

@@ -402,8 +402,13 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
             hit = pick_region(view_point, boxes, hit) if view_point is not None else None
             before = sel.confirmed
+            confirm = confirm_event(confirm_mode, key, jaw)
+            if confirm:  # say what the confirm landed on, so a "nothing happened" can be explained from the log
+                looked = None if sel.since is None or hit != sel.candidate else now - sel.since
+                log.info("CONFIRM pressed: gaze on %s%s", "nothing (cursor not on an object)" if hit is None else
+                         f"object #{hit}", "" if looked is None else f" for {looked:.1f} s (needs {MIN_LOOK_S} s)")
             sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
-                                   confirm=confirm_event(confirm_mode, key, jaw))
+                                   confirm=confirm)
             problem = gaze_problem(sample, now)
             problems[problem] = problems.get(problem, 0) + 1
             if sel.confirmed is not None and sel.confirmed != before:

@@ -20,6 +20,8 @@ import numpy as np
 GUIDE_COUNT = 5          # at most this many chevrons
 GUIDE_GAP_M = 0.55       # spacing along the route
 GUIDE_START_M = 1.3      # first chevron this far along the route from the chair (nearer ones are below the picture)
+SHORT_ROUTE_START_M = 0.4  # ... but never nearer than this
+SHORT_ROUTE_SHARE = 0.35  # on a short route the first chevron sits this share of the way along
 GUIDE_END_CLEAR_M = 0.25 # no chevron in the last 30 cm before the stop point
 GUIDE_LIFT_M = 0.35      # chevrons float this high above the floor
 GUIDE_WIDTH_M = 0.3      # real width of one chevron
@@ -32,6 +34,7 @@ MIN_SIZE_PX = 14.0       # smaller than this is too far away to read: skip
 MAX_SIZE_FRAC = 0.13     # never wider than this share of the picture (a near chevron would cover the view)
 EDGE_SLACK = 0.15        # a chevron may sit this fraction of the frame outside it and still be drawn
 MIN_DEPTH_M = 0.05
+VISIBLE_SHARE = 0.8  # near chevrons are raised so they sit within the lower 80% of the picture's half-height
 
 
 @dataclass(frozen=True)
@@ -86,17 +89,19 @@ def place_guides(route_m: np.ndarray | None, frame_w: int, frame_h: int, hfov_de
     along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
     # Along the whole route from the chair, not only its visible part: a route of one long leg (the floor near the
     # chair is never seen) still gets chevrons. Any that would land outside the picture are skipped below.
-    first, last = GUIDE_START_M, float(along[-1]) - GUIDE_END_CLEAR_M
+    # A short route (1.1 m to a nearby TV) used to get no chevrons at all: start earlier when the route is short.
+    first = min(GUIDE_START_M, max(SHORT_ROUTE_START_M, SHORT_ROUTE_SHARE * float(along[-1])))
+    last = float(along[-1]) - GUIDE_END_CLEAR_M
     guides: list[Guide] = []
     for k in range(GUIDE_COUNT):
         s = first + k * GUIDE_GAP_M
         if s > last:
             break
         at, heading = _point_at(path, along, s)
+        lift = _visible_lift(float(np.hypot(*at)), frame_w, frame_h, hfov_deg, cam_h, pitch_deg)
         ahead, _ = _point_at(path, along, min(s + DIRECTION_STEP_M, float(along[-1])))
         side = np.array([-heading[1], heading[0]])  # unit vector to the left of the route
-        world = np.array([[*at, GUIDE_LIFT_M], [*(at + side * GUIDE_WIDTH_M / 2), GUIDE_LIFT_M],
-                          [*ahead, GUIDE_LIFT_M]])
+        world = np.array([[*at, lift], [*(at + side * GUIDE_WIDTH_M / 2), lift], [*ahead, lift]])
         px, depth = project_points(world, frame_w, frame_h, hfov_deg, cam_h, pitch_deg)
         if np.isnan(px).any():
             continue
@@ -111,6 +116,15 @@ def place_guides(route_m: np.ndarray | None, frame_w: int, frame_h: int, hfov_de
         angle = float(np.clip(ANGLE_GAIN * math.atan2(travel[1], travel[0]), -MAX_TURN_RAD, MAX_TURN_RAD))
         guides.append(Guide((float(centre[0]), float(centre[1])), size, angle, float(depth[0]), len(guides)))
     return tuple(guides)
+
+
+def _visible_lift(distance: float, frame_w: int, frame_h: int, hfov_deg: float, cam_h: float, pitch_deg: float) -> float:
+    """How high a chevron floats at this distance: GUIDE_LIFT_M, raised when nearer so it is still in the picture
+    (a camera 0.9 m up and level cannot see anything 0.35 m high nearer than about 1 m). Never above the camera."""
+    focal = (frame_w / 2) / math.tan(math.radians(hfov_deg) / 2)
+    lowest_seen = math.radians(pitch_deg) + VISIBLE_SHARE * math.atan((frame_h / 2) / focal)  # angle below level
+    needed = cam_h - distance * math.tan(lowest_seen)
+    return float(min(cam_h, max(GUIDE_LIFT_M, needed)))
 
 
 def _on_screen(point: np.ndarray, frame_w: int, frame_h: int) -> bool:

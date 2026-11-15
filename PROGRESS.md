@@ -84,6 +84,15 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sun Nov 15, ~3 AM - Claude Code (Opus 5.5), for Prakhar (chair.py mapping, lock-on destination, triple blink)
+- New `motors/chair_driver.py`: every follower command maps onto Keshav's `chair_control.Chair` (stop / forward /
+  backward / turn_left / turn_right / drive), capped at 300, with its own 0.2 s stop watchdog; logs `MOTOR ...`.
+  `object_select --serial` now uses it; `--mock` still uses MotorDriver + MockSerial.
+- After a confirm on a real chair, the destination locks: gaze stops choosing, other objects are hidden, the
+  chair drives without having to keep looking. Triple blink (3 within 1.5 s), S/SPACE or X stops and re-opens choosing.
+- Chevrons near the chair float higher so short routes (TV at 1.1 m) show at least one.
+- Evidence: `python -m pytest -q` -> 602 passed. Not yet run on the hoverboard (humans run hardware).
+
 ### Sun Nov 15, 1:05 AM - Claude Code (Opus 5.5), for Keshav
 - Done: ESP32 now runs over its **COM port** (CH343); the native USB connector was damaged in a drive test (power only, no data). Sketch re-uploaded with `USB CDC On Boot -> Disabled`; `bridge.ino` code unchanged. Added `firmware/test_code/keyboard_drive.py` (arrow-key teleop, Windows only). `chair_control/README.md`: COM-port and macOS setup (port names, CH34x driver, data cable).
 - In progress (file:function, state): none. A WiFi (UDP) fallback was prototyped and reverted (not in the repo).

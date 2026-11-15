@@ -40,8 +40,8 @@ def test_route_bending_left_tilts_the_chevrons_to_the_left_and_right_to_the_righ
 
 
 def test_no_chevron_in_the_last_stretch_before_the_stop_point():
-    guides = guides_for([[1.2, 0.0], [1.5, 0.0]])  # 1.5 m route: first slot at 1.3 m, end clear from 1.25 m
-    assert guides == ()
+    route = [[0.3, 0.0], [0.5, 0.0]]  # 0.5 m route: first slot at 0.4 m, end clear from 0.25 m
+    assert guides_for(route) == ()
 
 
 def test_no_route_or_a_broken_route_gives_no_chevrons():
@@ -71,3 +71,8 @@ def test_a_route_of_one_long_leg_still_gets_chevrons():
     visible), and the first version placed chevrons only after the first route point, so none appeared."""
     guides = place_guides(np.array([[2.6, -1.1]]), 1920, 1080, 85.5, 0.89, 0.0)
     assert len(guides) >= 2 and all(g.angle < 0 for g in guides)  # pointing to the right, toward the target
+
+
+def test_a_short_route_to_a_nearby_object_still_gets_chevrons():
+    """Live, Sun Nov 15: a TV 1.1 m away got a route but no chevrons (they all fell below the picture)."""
+    assert len(place_guides(np.array([[1.06, -0.29]]), 1920, 1080, 85.5, 0.89, 0.0)) >= 1

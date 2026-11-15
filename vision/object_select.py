@@ -86,6 +86,8 @@ STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-ar
 KEY_MODE_STOP_KEY = ord("s")
 BLINK_MIN_S, BLINK_MAX_CONFIRM_S = 0.05, 0.4  # a deliberate blink: eyes closed this long
 DOUBLE_BLINK_GAP_S = 0.7  # the second blink must end within this time of the first
+CANCEL_BLINKS = 3  # this many short blinks within BLINK_SERIES_S cancel the drive (rider changed their mind)
+BLINK_SERIES_S = 1.5
 PLAN_LOG_EVERY_S = 1.0  # the route in words and the wheel command go to the log this often
 PLAN_SPEED_MPS = 0.4  # the planner's top speed (NavConfig.max_speed), for the time estimate
 SWITCH_MARGIN = 0.05  # gaze must be this much nearer (fraction of the picture) to switch objects
@@ -187,6 +189,29 @@ def double_blink(state: BlinkConfirm, closed: bool, t: float) -> tuple[BlinkConf
     if state.last_blink_end is not None and t - state.last_blink_end <= DOUBLE_BLINK_GAP_S:
         return BlinkConfirm(), True  # second blink: confirm, and start fresh
     return BlinkConfirm(last_blink_end=t), False
+
+
+@dataclass(frozen=True)
+class BlinkSeries:
+    """Recent short blinks, for the triple-blink cancel."""
+    closed_since: float | None = None
+    ends: tuple[float, ...] = ()  # end times of recent short blinks
+
+
+def count_blinks(state: BlinkSeries, closed: bool, t: float) -> tuple[BlinkSeries, int]:
+    """Feed one NEW gaze sample. Returns how many short blinks ended within BLINK_SERIES_S, counted at the moment a
+    blink ends (0 otherwise). After CANCEL_BLINKS the series starts again, so one triple blink acts once."""
+    if closed:
+        return (state if state.closed_since is not None else replace(state, closed_since=t)), 0
+    if state.closed_since is None:
+        return state, 0
+    length = t - state.closed_since
+    if not BLINK_MIN_S <= length <= BLINK_MAX_CONFIRM_S:
+        return BlinkSeries(), 0
+    ends = tuple(e for e in state.ends if t - e <= BLINK_SERIES_S) + (t,)
+    if len(ends) >= CANCEL_BLINKS:
+        return BlinkSeries(), len(ends)
+    return BlinkSeries(ends=ends), len(ends)
 
 
 def confirm_settings(mode: str) -> float | None:
@@ -421,6 +446,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     planned_for = None  # the destination the worker's newest result was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     blink_state = BlinkConfirm()
+    series = BlinkSeries()
     last_plan_log = -math.inf
     shown = None  # newest camera picture, for the screen only
     gaze_filter, drawn_tracks = EuroState(), {}  # smoothing state: cursor filter, outlines as drawn last time
@@ -469,11 +495,14 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                 continue
             before_sample = sample
             sample = drain_newest(gaze_queue, sample)
-            blinked = False
-            if confirm_mode == "blink" and sample is not None and sample is not before_sample:
-                blink_state, blinked = double_blink(blink_state, sample.closed, sample.t)
-                if blinked:
-                    log.info("DOUBLE BLINK detected")
+            blinked = tripled = False
+            if sample is not None and sample is not before_sample:
+                if confirm_mode == "blink":
+                    blink_state, blinked = double_blink(blink_state, sample.closed, sample.t)
+                    if blinked:
+                        log.info("DOUBLE BLINK detected")
+                series, count = count_blinks(series, sample.closed, sample.t)
+                tripled = count >= CANCEL_BLINKS
             if key == ord("c") and sample is not None and sample.point is not None:
                 offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
                 log.info("re-centred: offset %.3f, %.3f", *offset)
@@ -482,15 +511,26 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
             view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
             boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
-            hit = nearest_target(view_point, boxes, hit) if view_point is not None else None
+            # LOCKED = a destination is confirmed and the chair drives there. The gaze no longer chooses anything
+            # (other objects are hidden), the chair keeps going while the destination is in view, and only a
+            # TRIPLE BLINK, X or S ends it early. Arrival unlocks by itself (drive_tick clears the destination).
+            locked = driver is not None and sel.confirmed is not None
+            if locked and tripled:
+                log.info("TRIPLE BLINK: destination cancelled, chair stopped, choosing again")
+                sel, locked = clear_destination(sel), False
+            if locked:
+                hit = sel.confirmed if any(t.id == sel.confirmed for t in targets) else None
+            else:
+                hit = nearest_target(view_point, boxes, hit) if view_point is not None else None
             before = sel.confirmed
-            confirm = confirm_event(confirm_mode, key, jaw) or blinked
+            confirm = (confirm_event(confirm_mode, key, jaw) or blinked) and not locked
             if confirm:  # say what the confirm landed on, so a "nothing happened" can be explained from the log
                 looked = None if sel.since is None or hit != sel.candidate else now - sel.since
                 log.info("CONFIRM pressed: gaze on %s%s", "nothing (cursor not on an object)" if hit is None else
                          f"object #{hit}", "" if looked is None else f" for {looked:.1f} s (needs {MIN_LOOK_S} s)")
-            sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
-                                   confirm=confirm)
+            if not locked:
+                sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None,
+                                       dwell_s=dwell_s, confirm=confirm)
             problem = gaze_problem(sample, now)
             problems[problem] = problems.get(problem, 0) + 1
             if sel.confirmed is not None and sel.confirmed != before:
@@ -518,17 +558,23 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             gaze_frames += point is not None
             # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
             status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
+            frozen = status if status.startswith("CAMERA FROZEN") else ""  # the most urgent fact stays first
             if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
                 status = drive_note.strip(" |") + "  |  " + status
             chosen = next((t for t in targets if t.id == sel.confirmed), None)
-            if chosen is not None:
+            if chosen is not None and driver is not None:
+                status = ((frozen + "  |  " if frozen else "") + f"DRIVING TO {chosen.label}  |  "
+                          f"{drive_note.strip(' |')}  |  "
+                          f"triple-blink or {'S' if confirm_mode in ('key', 'blink') else 'SPACE'} to stop  X cancel")
+            elif chosen is not None:
                 status = f"DESTINATION: {chosen.label}  |  " + status
             if confirm_mode == "jaw" and jaw is not None:
                 status = jaw_meter(jaw.level()) + "  |  " + status
             mode = "Drive to object" if driver is not None else "Choose a destination"
             screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
             drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
-            drawn_targets = [drawn_tracks[t.id] for t in targets]
+            drawn_targets = [drawn_tracks[t.id] for t in targets
+                             if driver is None or sel.confirmed is None or t.id == sel.confirmed]  # locked: only it
             cv2.imshow(WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
                                     route, route_m, (hfov, cam_h, cam_pitch)))
         elapsed = max(time.monotonic() - start, 1e-6)
@@ -746,8 +792,13 @@ def main(argv: list[str] | None = None) -> int:
         from motors.driver import MotorDriver, open_serial
         from motors.mock_serial import MockSerial
 
-        mock = MockSerial() if args.mock else None
-        driver = MotorDriver((lambda: mock) if mock else (lambda: open_serial(args.serial)))
+        if args.mock:
+            mock = MockSerial()
+            driver = MotorDriver(lambda: mock)
+        else:  # the real hoverboard goes through Keshav's chair_control library (firmware/chair_control/chair.py)
+            from motors.chair_driver import ChairDriver
+
+            driver = ChairDriver(args.serial)
         driver.start()  # streams STOP lines from now on
     try:
         if args.confirm == "jaw":

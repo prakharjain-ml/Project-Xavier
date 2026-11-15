@@ -111,4 +111,8 @@ Every run writes a log file to `data/raw/sessions/`. Tell Claude "check the last
 | X | cancel the destination |
 | SPACE | emergency stop (stays stopped). In the -key modes SPACE confirms and S is the emergency stop |
 | R | re-arm after SPACE |
+| triple blink | while driving to a destination: stop the chair, forget the destination, gaze highlighting comes back |
+
+While driving (after a confirm on a real chair) only the destination stays outlined, gaze does not change the target,
+and every wheel command shows in the session log as `MOTOR chair.forward(n)` / `chair.turn_right(n)` / `chair.drive(l, r)` / `chair.stop()`.
 | Q | quit (prints the fps and gaze numbers) |

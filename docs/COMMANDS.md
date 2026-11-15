@@ -39,6 +39,16 @@ REAL hoverboard, jaw confirm (wheels up first, kill key in hand):
 ./demo.sh chair
 ```
 
+REAL hoverboard, press J to confirm (J stands in for the jaw clench, no headset needed; wheels up first):
+```
+./demo.sh chair-key --skip-calibration
+```
+
+Same with a FAKE motor port (nothing moves):
+```
+./demo.sh mock-key --skip-calibration
+```
+
 REAL hoverboard, confirm by looking (backup if the headset fails):
 ```
 ./demo.sh chair-dwell

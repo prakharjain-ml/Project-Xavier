@@ -6,6 +6,8 @@
 #   ./demo.sh mock     jaw + route following + chevrons, motor commands to a FAKE port (nothing moves)
 #   ./demo.sh chair    jaw + route following on the REAL hoverboard (wheels up first, kill key in hand)
 #   ./demo.sh chair-dwell   as chair, but confirm by looking (backup if the headset fails)
+#   ./demo.sh chair-key     REAL hoverboard, press J to confirm (stands in for the jaw clench; no headset)
+#   ./demo.sh mock-key      as chair-key but to a FAKE port (nothing moves)
 #   ./demo.sh preview  mouse preview of the route (no eyes, no headset, no motors)
 #
 # Cameras: laptop camera = 1 (eyes), Pixel = 0 (room), as on every run so far. If the calibration shows the room
@@ -58,16 +60,18 @@ need_headset_wifi() {
 
 mode="${1:-}"
 shift || true
-case "$mode" in dwell|jaw|mock|chair|chair-dwell|preview) need_pixel ;; esac
+case "$mode" in dwell|jaw|mock|chair|chair-dwell|chair-key|mock-key|preview) need_pixel ;; esac
 case "$mode" in jaw|mock|chair) need_headset_wifi ;; esac
 case "$mode" in
   dwell)       exec python -m vision.object_select --confirm dwell "${CAMS[@]}" "$@" ;;
   jaw)         exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" "$@" ;;
   mock)        exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" --drive --mock "${ROUTE[@]}" "$@" ;;
   chair)       exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
+  chair-key)   exec python -m vision.object_select --confirm key "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
+  mock-key)    exec python -m vision.object_select --confirm key "${CAMS[@]}" --drive --mock "${ROUTE[@]}" "$@" ;;
   chair-dwell) exec python -m vision.object_select --confirm dwell "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
   preview)     exec python -m vision.nav_preview --source "$ROOM_CAM" "$@" ;;
   *)
-    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 1 ;;
 esac

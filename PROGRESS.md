@@ -182,6 +182,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## docs/ (owner: Prakhar)
+### Sat Nov 14, ~7:15 PM - Claude Code (Fable 5.2), for Prakhar (how commands reach the hoverboard)
+- Done: `docs/MOTOR_COMMANDS.md`: what the laptop sends to the ESP32 and the hoverboard boards and why (a power level per wheel, 20 times a second; no angle, time, distance or acceleration is ever sent), each stage from planner to motor, a worked example, all constants, the four stop layers, and a list of what is unverified.
+- Needs a human: the unverified numbers in its section 7 (dead band 50, track width 0.55 m, real speed at 101 and 150, wheel signs); Keshav's newer bridge sketch is still on no branch.
+- Evidence: written from `motors/driver.py`, `motors/bridge_protocol.py`, `control/navigation.py`, `control/goto.py`, `control/state_machine.py`, `firmware/bridge/bridge.ino` at 2b3a6cf; `python -m pytest -q` on that commit -> 555 passed, 1 failed (`test_flicker_runs_after_space`, passes alone: timing flake under load).
+
 ### Sat Nov 14, ~6:28 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (independent audit, next steps, honest docs)
 - Done: `docs/PROJECT_CONTEXT.md` (independent audit: how the whole project works, plus 14 findings with proof scripts). `docs/NEXT_STEPS.md` (ranked work for the hours left). Honesty pass over `DEVPOST.md`, `DEMO.md` (rewritten for the gaze + confirm + drive demo), `README.md`, `ARCHITECTURE.md`, `PRD.md`, `TEAMMATE_GUIDE.md`; `SAFETY.md` and `INTERFACES.md` only gained an "Implementation status" note, their rules are unchanged.
 - Audit findings being fixed tonight (see the folder sections when they land): frozen camera keeps driving; arrival unreachable for chair/table/person; no operator stop in `object_select --drive`; obstacles limited to 4 on-screen boxes; no soft start; spin inside the motor dead band; jaw calibration accepts a dead signal.

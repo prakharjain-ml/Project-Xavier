@@ -129,6 +129,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~9:47 PM - Claude Code (Opus 5.5), for Prakhar (steadier cursor, gliding outlines)
+- Prakhar, live: "the cursor shakes around a lot", the screen should be "much much smoother". EyeTrax already applies Kalman + EMA (0.25); still shaky.
+- Done (`vision/smoothing.py`): One Euro filter on the gaze point (min cutoff 0.3 Hz, beta 1.0). Synthetic test (2% shake, 30 Hz): fixation shake cut to 0.23 of raw, a full-screen glance lands in 0.10 s. The smoothed point drives both the cursor and which object is under it. Outlines glide 35% of the way to each new detection per screen update instead of jumping 7 times a second (drawing only).
+- Evidence: `python -m pytest -q` passes. Not yet judged live.
+
 ### Sat Nov 14, ~9:36 PM - Claude Code (Opus 5.5), for Prakhar (gaze screen lag)
 - Prakhar, live: "very laggy". Measured per pass at 1920x1080: detection 60 ms (`yolo11s-seg`), route plan 29 ms, drawing 9 ms. Detection ran on every camera frame, so the eye cursor updated only as fast as YOLO.
 - Fix (`vision/object_select.py`): detection runs at most every 0.15 s (`DETECT_PERIOD_S`); the camera picture and the gaze cursor update every pass. The direct planner steps only on a new detection (its acceleration limit assumes one step per look); the state machine still runs every pass, so looking away, SPACE and a stale frame stop as fast as before.

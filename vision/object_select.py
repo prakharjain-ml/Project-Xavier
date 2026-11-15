@@ -47,6 +47,7 @@ from vision.detect_track import (
     steering_offset,
 )
 from vision import hud
+from vision.smoothing import EuroState, glide_tracks, one_euro
 from vision.floor_route import Route
 from vision.route_scene import (
     CAM_HEIGHT_M,
@@ -274,6 +275,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     first_seen: dict[int, float] = {}
     last_detect = -math.inf  # when detection last ran
     shown = None  # newest camera picture, for the screen only
+    gaze_filter, drawn_tracks = EuroState(), {}  # smoothing state: cursor filter, outlines as drawn last time
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
     targets: list[Track] = []  # the few of them shown as boxes: what the rider can choose
     frame, last_t, confirmations = None, None, []
@@ -311,7 +313,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             log.info("re-centred: offset %.3f, %.3f", *offset)
         if key == ord("x"):
             sel = clear_destination(sel)
-        point = corrected_point(sample, offset, now)  # gaze as a fraction of the whole screen
+        gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
         view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
         boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
         hit = pick_region(view_point, boxes, hit) if view_point is not None else None
@@ -348,7 +350,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             status = drive_note.strip(" |") + "  |  " + status
         mode = "Drive to object" if driver is not None else "Choose a destination"
         screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
-        cv2.imshow(WINDOW, draw(cv2, screen_frame, targets, boxes, sel, view_point, now, status, dwell_s, mode, route))
+        drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
+        drawn_targets = [drawn_tracks[t.id] for t in targets]
+        cv2.imshow(WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
+                                route))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")

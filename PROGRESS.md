@@ -16,6 +16,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 ---
 
 ## bci/ (owner: Vani)
+
+### November 15 — Jaw–temple clench demo
+- Added the standalone live detector, calibrated model, and EMG datasets in `models/jaw-temple/`.
+- Rebuilt from the two bundled sample files with the README command. The cutoff was 10.5 µV RMS and the rebuilt joblib matched the demo model byte for byte.
+
 ### [time] - [model/agent]
 - Done:
 - In progress (file:function, state):

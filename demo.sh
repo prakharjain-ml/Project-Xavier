@@ -31,8 +31,20 @@ esp32_port() {
   echo "$port"
 }
 
+need_pixel() {
+  # The Pixel's webcam mode drops off often. Without it there is only one camera, so "camera 1" does not exist
+  # and the eye tracker fails with "cannot open camera 1". Check first and say what to do.
+  if ! system_profiler SPCameraDataType 2>/dev/null | grep -q "Android Webcam"; then
+    echo "The Pixel is not connected as a webcam (macOS only sees: $(system_profiler SPCameraDataType 2>/dev/null | grep -E '^ +[A-Za-z].*:$' | tr -d ':' | xargs))." >&2
+    echo "Fix: unplug the Pixel, plug it straight into the laptop, unlock it, choose 'Webcam' in the USB menu, keep the screen on." >&2
+    echo "Then run this command again." >&2
+    exit 2
+  fi
+}
+
 mode="${1:-}"
 shift || true
+case "$mode" in dwell|jaw|mock|chair|chair-dwell|preview) need_pixel ;; esac
 case "$mode" in
   dwell)       exec python -m vision.object_select --confirm dwell "${CAMS[@]}" "$@" ;;
   jaw)         exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" "$@" ;;

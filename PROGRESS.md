@@ -84,6 +84,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, ~9:52 PM - Claude Code (Opus 5.5), for Prakhar (Keshav's chair_control merged into prakhar/gaze)
+- Merged `origin/firmware/chair-control` (Keshav: both wheels, `firmware/chair_control/`, new `bridge.ino`) and `origin/main` (Vani: `models/api.py`, `models/train.py`). Only conflict: this file, both entries kept.
+- Checked: our `motors/driver.py` already speaks Keshav's bridge protocol exactly (his README says so too). We send `C,7,90,60` / `S,8`, which match the bridge's `sscanf("C,%ld,%ld,%ld")` / `sscanf("S,%ld")`; we parse its `D,0,OK`, `D,37,OBSTACLE`, `D,0,WATCHDOG` and ignore `#` lines. So `object_select --drive --serial <port>` drives his bridge with no new code. Do not run `chair_control` and our driver at the same time (one program per port).
+- Units: the bridge takes -1000..1000; our cap is `MAX_SPEED = 150` (15% power, Keshav suggests 150-250 for testing). His bridge reports distance 0 for "no echo"; our obstacle rule only blocks 0 < distance < 50, so 0 does not block (same as the bridge).
+- Evidence: `python -m pytest -q` -> `582 passed` after the merge. Nothing run on the real bridge (humans only).
+
 ### Sat Nov 14, 9:48 PM - Claude Code (Opus 5.5), for Keshav
 - Done: **Both wheels drive from the laptop.** Laptop -> ESP32 -> each board's 5-pin master-slave plug (P2 = PA2 TX,
   P3 = PA3 RX; ESP32 GND to each board's SWD GND hole, because P1 is not a solid ground). Slave unlocked and flashed.

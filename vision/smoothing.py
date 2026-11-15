@@ -21,10 +21,12 @@ from dataclasses import dataclass, replace
 from vision.detect_track import Track
 
 # One Euro settings for gaze in screen fractions (0..1). Lower MIN_CUTOFF_HZ = steadier fixations but more lag;
-# higher BETA = less lag on fast glances. Swept on synthetic gaze (2% shake, 30 Hz): 0.3 / 1.0 cuts the shake of
-# a fixation to 0.23 of raw and still lands a full-screen glance in 0.10 s.
-MIN_CUTOFF_HZ = 0.3
-BETA = 1.0
+# higher BETA = less lag on fast glances. Swept on synthetic gaze (2% shake, 30 Hz):
+#   0.3 / 1.0: shake 0.23 of raw, glance 0.10 s, slow-sweep lag 90 ms (Prakhar: steady but laggy)
+#   0.6 / 1.5: shake 0.31 of raw, glance 0.10 s, slow-sweep lag 66 ms  <- chosen; EyeTrax smooths too
+#   1.0 / 4.0: shake 0.45 of raw, glance 0.03 s, slow-sweep lag 37 ms
+MIN_CUTOFF_HZ = 0.6
+BETA = 1.5
 DERIVATIVE_CUTOFF_HZ = 1.0
 RESET_AFTER_S = 0.5  # gaze missing this long (eyes closed, face lost): start fresh instead of gliding from the old spot
 GLIDE_SHARE = 0.35  # each screen update, a drawn box moves this share of the way to its newest detected box

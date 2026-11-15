@@ -47,6 +47,8 @@ from vision.detect_track import (
     steering_offset,
 )
 from vision import hud
+from vision.chevrons import place_guides, route_length_m
+from vision.scene_worker import SceneWorker
 from vision.smoothing import EuroState, glide_tracks, one_euro
 from vision.floor_route import Route
 from vision.route_scene import (
@@ -216,7 +218,8 @@ def to_view_point(point: tuple[float, float] | None) -> tuple[float, float] | No
 
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
          status: str, dwell_s: float | None = DWELL_S, mode: str = "Choose a destination",
-         route: Route | None = None) -> np.ndarray:
+         route: Route | None = None, route_m: np.ndarray | None = None,
+         camera: tuple[float, float, float] | None = None) -> np.ndarray:
     """The screen: camera picture with each selectable object outlined, the gaze cursor, and the status bars.
     `point` is the gaze as a fraction of the camera picture (see to_view_point). Returns CANVAS_H x CANVAS_W."""
     view = cv2.resize(frame, (CANVAS_W, VIEW_H))
@@ -241,13 +244,18 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
     cv2.line(view, (cx - 15, cy), (cx + 15, cy), GREY, 2)
     cv2.line(view, (cx, cy - 15), (cx, cy + 15), GREY, 2)
     cursor = None if point is None else (point[0] * CANVAS_W, point[1] * VIEW_H)
-    # The route the chair would follow (--follow route). Dashed: it is planned on the local floor estimate and
-    # the detector's outlines only; Gemini's no-go check does not run while the chair may be moving.
-    route_points = None if route is None else route.points * (sx, sy)
-    route_width = None if route is None else route.half_width_px * sx * RIBBON_DISPLAY_SCALE
+    # The route the chair follows (--follow route), shown as floating chevrons along it (Google Live View style).
+    # camera = (hfov, height, pitch): the same numbers the planner used, so the chevrons sit over the route.
+    guides, label = (), None
+    if route_m is not None and camera is not None:
+        hfov, cam_h, pitch = camera
+        placed = place_guides(route_m, frame.shape[1], frame.shape[0], hfov, cam_h, pitch)
+        guides = tuple(replace(g, center=(g.center[0] * sx, g.center[1] * sy), size=g.size * sx) for g in placed)
+        chosen = next((t for t in targets if t.id == sel.confirmed), None)
+        if guides and chosen is not None:
+            label = f"Toward {chosen.label} · {route_length_m(route_m):.1f} m"
     return hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status,
-                                         route_points=route_points, route_half_width=route_width,
-                                         route_verified=False))
+                                         guides=guides, guide_label=label, clock=now))
 
 
 def plan_for_drive(frame: np.ndarray, tracks: list[Track], target: Track, hfov: float, cam_h: float,
@@ -270,10 +278,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     chair follows the shortest safe route planned on the floor in each camera frame (control/follow.py)."""
     dwell_s = confirm_settings(confirm_mode)
     ctrl, nav, drive_note = ControllerState(), NavState(), ""
-    planned_for, route, route_m = None, None, None  # which (frame, destination) the current route was planned for
+    route, route_m = None, None  # newest route to the destination (image pixels, metres), from the worker
+    planned_for = None  # the destination the worker's newest result was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
-    first_seen: dict[int, float] = {}
-    last_detect = -math.inf  # when detection last ran
     shown = None  # newest camera picture, for the screen only
     gaze_filter, drawn_tracks = EuroState(), {}  # smoothing state: cursor filter, outlines as drawn last time
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
@@ -281,89 +288,103 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     frame, last_t, confirmations = None, None, []
     gaze_frames = total_frames = 0
     problems: dict[str | None, int] = {}
-    start = time.monotonic()
-    while seconds is None or time.monotonic() - start < seconds:
-        key = cv2.waitKey(1) & 0xFF
-        if key in (27, ord("q")):
-            break
-        if not tracker_alive():  # a live test once ran 4 minutes with a dead tracker: stop and say so
-            log.error("eye tracker stopped (see its error above): no gaze possible, ending the session")
-            break
-        if jaw is not None and not jaw.alive():  # the headset reader crashed: a clench could never confirm now
-            log.error("jaw confirm source died (%s): ending the session", jaw.error)
-            break
-        now = time.monotonic()
-        snapshot = reader.latest()
-        # New camera frame: run YOLO + tracking, but at most every DETECT_PERIOD_S. Detection takes about 60 ms,
-        # the rest of a pass about 10 ms; running it on every frame made the gaze cursor trail the eyes.
-        if snapshot is not None:
-            shown = snapshot[0]  # the picture on screen follows the camera every pass; outlines use the last detection
-        replanned = False
-        if snapshot is not None and snapshot[1] != last_t and now - last_detect >= DETECT_PERIOD_S:
-            last_detect, replanned = now, True
-            frame, last_t = snapshot
-            tracks = detect(model, frame, focal_length_px(frame.shape[1], hfov), device, classes)
-            first_seen = {**{t.id: now for t in tracks if t.id not in first_seen}, **first_seen}
-            targets = separate_targets(pick_targets(tracks, first_seen, max_n=len(tracks)), frame.shape[1], MAX_TARGETS)
-        if frame is None:
-            continue
-        sample = drain_newest(gaze_queue, sample)
-        if key == ord("c") and sample is not None and sample.point is not None:
-            offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
-            log.info("re-centred: offset %.3f, %.3f", *offset)
-        if key == ord("x"):
-            sel = clear_destination(sel)
-        gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
-        view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
-        boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
-        hit = pick_region(view_point, boxes, hit) if view_point is not None else None
-        before = sel.confirmed
-        sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
-                               confirm=confirm_event(confirm_mode, key, jaw))
-        problem = gaze_problem(sample, now)
-        problems[problem] = problems.get(problem, 0) + 1
-        if sel.confirmed is not None and sel.confirmed != before:
-            chosen = next(t for t in targets if t.id == sel.confirmed)
-            dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
-            how = {"dwell": "dwell", "key": "J key", "jaw": "jaw clench"}[confirm_mode]
-            line = (f"CONFIRMED {chosen.label} #{chosen.id} {dist} steer "
-                    f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
-            log.info(line)
-            confirmations.append(line)
-        if follow == "route" and (last_t, sel.confirmed) != planned_for:  # new camera frame or new destination
-            planned_for, route, route_m = (last_t, sel.confirmed), None, None
-            chosen = next((t for t in targets if t.id == sel.confirmed), None)
-            if chosen is not None:
-                route, route_m = plan_for_drive(frame, tracks, chosen, hfov, cam_h, cam_pitch)
-        if driver is not None:
-            # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
-            stops = (StopRequest(StopSource.OPERATOR, now),) if key == STOP_KEY else ()
-            sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
-                                                    confirmations, obstacles=tracks, frame_h=frame.shape[0],
-                                                    frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
-                                                    follow=follow, route_m=route_m, replan=replanned)
-        total_frames += 1
-        gaze_frames += point is not None
-        # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
-        status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
-        if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
-            status = drive_note.strip(" |") + "  |  " + status
-        mode = "Drive to object" if driver is not None else "Choose a destination"
-        screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
-        drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
-        drawn_targets = [drawn_tracks[t.id] for t in targets]
-        cv2.imshow(WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
-                                route))
-    log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
-    lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
-    log.info("gaze lost because: %s", lost or "never lost")
-    return confirmations
+    def detect_frame(picture):  # runs on the worker thread
+        return detect(model, picture, focal_length_px(picture.shape[1], hfov), device, classes)
+
+    def plan_frame(picture, all_tracks, target):  # runs on the worker thread
+        return plan_for_drive(picture, all_tracks, target, hfov, cam_h, cam_pitch)
+
+    # Detection and route planning run on their own thread, so the screen and the gaze cursor never wait for them.
+    worker = SceneWorker(reader, detect_frame, plan_frame if follow == "route" else None, DETECT_PERIOD_S)
+    worker.start()
+    try:
+        start = time.monotonic()
+        while seconds is None or time.monotonic() - start < seconds:
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")):
+                break
+            if not tracker_alive():  # a live test once ran 4 minutes with a dead tracker: stop and say so
+                log.error("eye tracker stopped (see its error above): no gaze possible, ending the session")
+                break
+            if jaw is not None and not jaw.alive():  # the headset reader crashed: a clench could never confirm now
+                log.error("jaw confirm source died (%s): ending the session", jaw.error)
+                break
+            if not worker.alive():  # detection thread crashed: no new detections, so nothing can be chosen or driven
+                log.error("detection thread died (%s): ending the session", worker.error)
+                break
+            now = time.monotonic()
+            snapshot = reader.latest()
+            if snapshot is not None:
+                shown = snapshot[0]  # the picture on screen follows the camera every pass; outlines use the last detection
+            # Newest finished detection (and route) from the worker thread. replanned = it is new this pass.
+            replanned, scene = False, worker.latest()
+            if scene is not None and scene.frame_t != last_t:
+                replanned = True
+                frame, last_t, tracks, targets = scene.frame, scene.frame_t, scene.tracks, scene.targets
+                planned_for = scene.destination
+                # A route planned for an earlier destination is not this destination's route.
+                route, route_m = (scene.route, scene.route_m) if scene.destination == sel.confirmed else (None, None)
+            if frame is None:
+                continue
+            sample = drain_newest(gaze_queue, sample)
+            if key == ord("c") and sample is not None and sample.point is not None:
+                offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
+                log.info("re-centred: offset %.3f, %.3f", *offset)
+            if key == ord("x"):
+                sel = clear_destination(sel)
+            gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
+            view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
+            boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
+            hit = pick_region(view_point, boxes, hit) if view_point is not None else None
+            before = sel.confirmed
+            sel = update_selection(sel, hit, now, box=boxes.get(hit) if hit is not None else None, dwell_s=dwell_s,
+                                   confirm=confirm_event(confirm_mode, key, jaw))
+            problem = gaze_problem(sample, now)
+            problems[problem] = problems.get(problem, 0) + 1
+            if sel.confirmed is not None and sel.confirmed != before:
+                chosen = next(t for t in targets if t.id == sel.confirmed)
+                dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
+                how = {"dwell": "dwell", "key": "J key", "jaw": "jaw clench"}[confirm_mode]
+                line = (f"CONFIRMED {chosen.label} #{chosen.id} {dist} steer "
+                        f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
+                log.info(line)
+                confirmations.append(line)
+            worker.set_destination(sel.confirmed if follow == "route" else None)  # plan for it from the next frame
+            if driver is not None:
+                # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
+                stops = (StopRequest(StopSource.OPERATOR, now),) if key == STOP_KEY else ()
+                sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
+                                                        confirmations, obstacles=tracks, frame_h=frame.shape[0],
+                                                        frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
+                                                        follow=follow, route_m=route_m, replan=replanned,
+                                                    route_pending=planned_for != sel.confirmed)
+            total_frames += 1
+            gaze_frames += point is not None
+            # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
+            status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
+            if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
+                status = drive_note.strip(" |") + "  |  " + status
+            mode = "Drive to object" if driver is not None else "Choose a destination"
+            screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
+            drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
+            drawn_targets = [drawn_tracks[t.id] for t in targets]
+            cv2.imshow(WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
+                                    route, route_m, (hfov, cam_h, cam_pitch)))
+        elapsed = max(time.monotonic() - start, 1e-6)
+        log.info("screen ran at %.0f fps (%d passes in %.0f s)", total_frames / elapsed, total_frames, elapsed)
+        log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
+        lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
+        log.info("gaze lost because: %s", lost or "never lost")
+        return confirmations
+    finally:
+        worker.stop()
 
 
 def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
                nav: NavState, now: float, log_lines: list[str], *, obstacles: Sequence[Track], frame_h: int,
                frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False,
-               follow: str = "direct", route_m: np.ndarray | None = None, replan: bool = True):
+               follow: str = "direct", route_m: np.ndarray | None = None, replan: bool = True,
+               route_pending: bool = False):
     """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
     whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it.
 
@@ -412,7 +433,8 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
         log.info("state %s -> %s", before.value, ctrl.state.value)
     note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
     if target is not None and follow == "route" and no_route:
-        note += " (no safe route)"
+        # Just confirmed: the worker has not planned for this destination yet (about 0.15 s). Not moving either way.
+        note += " (planning route)" if route_pending else " (no safe route)"
     if ctrl.state == State.E_STOP:  # latched: only the operator's R key releases it
         note += " (emergency stop: press R to re-arm)"
     return sel, ctrl, nav, note

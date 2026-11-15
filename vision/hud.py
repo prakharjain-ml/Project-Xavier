@@ -101,6 +101,18 @@ START_EDGE_PX = 4               # a route that starts this close to the bottom e
 MIN_EDGE_POINTS = 12            # ignore specks when tracing the ribbon's edge
 RING_HIDE_PX = 3.0              # the ribbon's edge is not drawn inside the stop ring (plus this margin)
 CURSOR_GLOW = 170               # 0..255 strength of the soft light under the cursor
+# Floating chevrons (Google Maps Live View style, look after Polyfork's "Direction Chevron", CC BY 4.0):
+# a flat rounded chevron, white face, cyan rim, a darker blue side for thickness, a soft shadow on the floor.
+GUIDE_FACE_RGB = (246, 252, 255)
+GUIDE_LIT_RGB = (176, 244, 252)   # the face tint that drifts from the nearest chevron to the farthest
+GUIDE_SIDE_RGB = (18, 84, 146)    # the chevron's thickness, seen from slightly above
+GUIDE_SHADOW_ALPHA = 0.32
+GUIDE_ARM = (0.42, 0.3)            # chevron arm end, as a fraction of its width: (sideways, down from the tip)
+GUIDE_STROKE = 0.24               # face stroke width, fraction of the chevron's width
+GUIDE_RIM = 0.045                 # rim width each side, fraction of the width
+GUIDE_DEPTH = (0.03, 0.075)       # offset of the side layer (thickness), fraction of the width
+GUIDE_FLOW_PER_S = 0.7            # the highlight moves this many chevrons per second: slow, never a flash
+GUIDE_LABEL_GAP = 10              # pixels between the farthest chevron and its label pill
 CURSOR_R, CURSOR_PX, CURSOR_DOT_PX = 13, 2, 3
 
 
@@ -125,6 +137,9 @@ class HudState:
     mode: str = "Route preview"
     status: str = "Stopped · Awaiting confirmation"
     phase: float = 0.0                          # animates the chevrons: +1.0 moves each one a full gap forward
+    guides: tuple = ()                          # floating 3D chevrons along the route (vision.chevrons.Guide)
+    guide_label: str | None = None              # pill above the farthest chevron, e.g. "Toward chair · 2.4 m"
+    clock: float = 0.0                          # seconds, drives the slow highlight that runs along the chevrons
 
 
 @dataclass(frozen=True)
@@ -182,6 +197,8 @@ def render(frame: np.ndarray, state: HudState) -> np.ndarray:
         _route_lines(view, ribbon, state.phase, state.route_verified)
     for obj in sorted(state.objects, key=lambda o: o.selected):  # chosen objects last, so they end up on top
         _object_lines(view, obj)
+    if state.guides:
+        _draw_guides(view, state.guides, state.clock, state.guide_label)
     if has_cursor:
         _cursor(view, state.cursor)  # last, so the gaze cursor is never hidden by anything else
     return out
@@ -673,3 +690,58 @@ def _label_pill(text: str) -> tuple[np.ndarray, np.ndarray]:
     patch.setflags(write=False)
     alpha.setflags(write=False)
     return patch, alpha
+
+
+# ---------------------------------------------------------------- floating chevrons
+
+def _guide_line(guide) -> np.ndarray:
+    """The chevron's centre line (arm end, tip, arm end) in frame pixels, rotated to point along the route."""
+    arm_x, arm_y = GUIDE_ARM
+    local = np.array([[-arm_x, arm_y], [0.0, -arm_y], [arm_x, arm_y]]) * guide.size
+    c, s = math.cos(guide.angle), math.sin(guide.angle)
+    # Positive angle turns an "up" chevron to the left; y grows downward on screen.
+    rotated = np.stack([local[:, 0] * c + local[:, 1] * s, -local[:, 0] * s + local[:, 1] * c], axis=1)
+    return rotated + np.asarray(guide.center)
+
+
+def _guide_shadow(view: np.ndarray, guide) -> None:
+    """Soft flattened shadow on the floor under the chevron, blended only inside a small box around it."""
+    h, w = view.shape[:2]
+    cx, cy = guide.center[0], guide.center[1] + 0.95 * guide.size
+    ax, ay = 0.42 * guide.size, 0.08 * guide.size
+    x1, y1, x2, y2 = int(cx - ax - 2), int(cy - ay - 2), int(cx + ax + 3), int(cy + ay + 3)
+    x1, y1, x2, y2 = max(x1, 0), max(y1, 0), min(x2, w), min(y2, h)
+    if x1 >= x2 or y1 >= y2:
+        return
+    mask = np.zeros((y2 - y1, x2 - x1), np.uint8)
+    cv2.ellipse(mask, (int(cx - x1), int(cy - y1)), (max(1, int(ax)), max(1, int(ay))), 0, 0, 360, 255, -1,
+                cv2.LINE_AA)
+    mask = cv2.GaussianBlur(mask, (0, 0), max(1.0, ay / 2))
+    a = (mask.astype(np.float32) / 255 * GUIDE_SHADOW_ALPHA)[:, :, None]
+    roi = view[y1:y2, x1:x2]
+    roi[:] = (roi * (1 - a)).astype(np.uint8)
+
+
+def _draw_guides(view: np.ndarray, guides, clock: float, label: str | None) -> None:
+    """Far chevrons first, so nearer ones overlap them. One soft highlight drifts along the row."""
+    count = len(guides)
+    flow = (clock * GUIDE_FLOW_PER_S) % (count + 1.5)  # the extra half-chevron of quiet before it starts again
+    for guide in sorted(guides, key=lambda g: -g.depth):
+        line = _guide_line(guide)
+        stroke = max(4, int(round(GUIDE_STROKE * guide.size)))
+        rim = max(2, int(round(GUIDE_RIM * guide.size)))
+        side = line + np.array(GUIDE_DEPTH) * guide.size
+        lit = max(0.0, 1.0 - abs(flow - guide.order))  # 0..1, smooth: a gentle glow passing by, never a blink
+        face = tuple(int(f + (g - f) * lit) for f, g in zip(GUIDE_FACE_RGB, GUIDE_LIT_RGB))
+        _guide_shadow(view, guide)
+        _polylines(view, [side], False, _bgr(GUIDE_SIDE_RGB), stroke + 2 * rim)
+        _polylines(view, [line], False, _bgr(CYAN_RGB), stroke + 2 * rim)
+        _polylines(view, [line], False, _bgr(face), stroke)
+    if label:
+        far = max(guides, key=lambda g: g.depth)
+        patch, alpha = _label_pill(label)
+        top = _guide_line(far)[:, 1].min()
+        x = int(far.center[0] - patch.shape[1] / 2)
+        y = int(top - GUIDE_LABEL_GAP - patch.shape[0])
+        _paste(view, patch, alpha, min(max(x, EDGE_MARGIN), view.shape[1] - patch.shape[1] - EDGE_MARGIN),
+               max(y, EDGE_MARGIN))

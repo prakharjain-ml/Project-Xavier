@@ -153,6 +153,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sun Nov 15, ~12:40 AM - Claude Code (Opus 5.5), for Prakhar (45+ fps screen, floating chevrons, less cursor lag)
+- Detection and route planning now run on a background thread (`vision/scene_worker.py`); the gaze screen picks up the newest result each pass. Measured with the real detector, a fake 30 fps camera and no window: 189 passes a second (was capped by the 60 ms detection). If the thread dies the session ends; if it stalls, results stop getting newer and the stale-data rule stops the chair.
+- Route shown as floating 3D chevrons along the A* route (Google Maps Live View style; look after Polyfork's "Direction Chevron", CC BY 4.0, credit it on Devpost) with a "Toward chair · 3.2 m" pill (`vision/chevrons.py`, drawn in `vision/hud.py`). Example: `docs/img/chevrons_design.jpg` (hand-made route on the lounge photo).
+- Cursor filter lightened (One Euro 0.6 Hz / 1.5): slow-sweep lag 90 -> 66 ms in a synthetic test. EyeTrax itself measured at 28.5 frames/s with 13 ms of face processing per frame, so it is not the bottleneck.
+- Found: on the lounge photo and the hall frame the planner refuses every route (lanes about 0.7 m wide; it needs 0.76 m: 0.3 m chair half-width + 0.08 m margin each side). The floor demo needs a staged scene with at least 1 m free on the passing side and the phone tilted down.
+- Evidence: `python -m pytest -q` -> `591 passed`. Not yet seen live.
+
 ### Sat Nov 14, ~10:04 PM - Claude Code (Opus 5.5), for Prakhar (Gemini off by default)
 - `vision/nav_preview.py`: `--scene-ai` now defaults to `off` (A* on the locally found floor only); `--scene-ai gemini` still works for showing the Gemini part. The gaze screen and drive program (`vision/object_select.py`) never called Gemini, so its lag was not Gemini (it was detection on every frame, fixed earlier tonight).
 

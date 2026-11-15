@@ -752,7 +752,9 @@ def test_route_mode_keeps_the_chair_still_when_no_route_is_safe(monkeypatch):
     barrier = Track(id=9, label="couch", conf=0.9, bbox=(0, 850, FRAME_W - 1, 1000), distance_m=2.0)
     # The barrier overlaps the chair sideways, and the selection rule only offers well-separated objects. Offer
     # just the chair, so the barrier is purely an obstacle (it is still in the tracks the route is planned on).
-    monkeypatch.setattr(osel, "separate_targets", lambda ranked, _w, _n: [t for t in ranked if t.id == CHAIR.id])
+    import vision.scene_worker as worker_module  # targets are chosen on the detection thread
+
+    monkeypatch.setattr(worker_module, "separate_targets", lambda ranked, _w, _n: [t for t in ranked if t.id == CHAIR.id])
 
     def script(s: DriveSession):
         yield from s.wait(MIN_LOOK_S + 0.2)
@@ -816,3 +818,56 @@ def test_between_detections_the_planner_is_not_stepped_but_the_state_machine_sti
                                       replan=False, **common)
     assert driver.sent[-1].stop  # looked away on a pass without a detection: stop command all the same
     assert MockSerial is not None
+
+
+def test_scene_worker_publishes_detections_and_a_route_for_the_destination():
+    import time
+
+    import numpy as np
+
+    from vision.scene_worker import SceneWorker
+
+    frame = np.zeros((FRAME_H, FRAME_W, 3), np.uint8)
+
+    class Camera:
+        def latest(self):
+            return frame, time.monotonic()
+
+    planned = []
+    worker = SceneWorker(Camera(), detect=lambda _f: [CHAIR],
+                         plan=lambda _f, _t, target: planned.append(target.id) or ("route", np.ones((2, 2))),
+                         period_s=0.01)
+    worker.set_destination(CHAIR.id)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5.0
+        while (worker.latest() is None or worker.latest().route is None) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        scene = worker.latest()
+    finally:
+        worker.stop()
+    assert scene is not None and [t.id for t in scene.targets] == [CHAIR.id]
+    assert scene.destination == CHAIR.id and scene.route == "route" and CHAIR.id in planned
+
+
+def test_scene_worker_that_crashes_reports_itself_dead():
+    import time
+
+    import numpy as np
+
+    from vision.scene_worker import SceneWorker
+
+    class Camera:
+        def latest(self):
+            return np.zeros((10, 10, 3), np.uint8), time.monotonic()
+
+    def broken(_frame):
+        raise RuntimeError("model crashed")
+
+    worker = SceneWorker(Camera(), detect=broken, plan=None, period_s=0.0)
+    worker.start()
+    deadline = time.monotonic() + 5.0
+    while worker.alive() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    worker.stop()
+    assert not worker.alive() and isinstance(worker.error, RuntimeError)

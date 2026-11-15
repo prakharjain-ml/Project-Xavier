@@ -265,10 +265,8 @@ def test_end_to_end_look_confirm_hold_then_drive_lines_reach_the_port(monkeypatc
     left, right = map(int, drive[-1].split(",")[2:])
     assert left > 0 and right > 0  # driving toward the centred chair
     first_drive = next(i for i, ln in enumerate(port.lines()) if ln.startswith("C,"))
-    from shared.protocol import DWELL_S as HOLD
-
-    # The safety state machine is in the path: wheels move only after the 1.5 s hold that follows the confirm.
-    assert port.times[first_drive] - calls["j_at"] >= HOLD - 0.15
+    # No dwell after a confirm (Prakhar, Sun Nov 15): the confirm is the decision, wheels move within a second.
+    assert port.times[first_drive] - calls["j_at"] < 1.0
     assert all(ln.startswith("S,") for ln in port.lines()[-3:])  # explicit stop when the session ends
 
 
@@ -487,13 +485,13 @@ def test_space_latches_an_emergency_stop_until_r_rearms(monkeypatch):
     # Act
     s = run_drive_session(monkeypatch, [CHAIR], script, confirm_mode="jaw", jaw=_JawOnJ())
 
-    # Assert: stopped and E_STOP on screen from SPACE until R; after R a fresh 1.5 s hold, then it moves again.
+    # Assert: stopped and E_STOP on screen from SPACE until R; after R it moves again (no dwell).
     space_t, rearm_t = s.marks["space"], s.marks["rearm"]
     assert s.moving_lines(after=space_t + SETTLE_S, before=rearm_t) == []
     latched = [text for t, text in s.statuses if space_t < t < rearm_t]
     assert latched and all("E_STOP" in text for text in latched)
     first_move_again = next(t for t, line in zip(s.port.times, s.port.lines()) if line.startswith("C,") and t > rearm_t)
-    assert first_move_again - rearm_t >= DWELL_S - 0.15
+    assert first_move_again > rearm_t  # never before R; no 1.5 s dwell after it
 
 
 def test_x_cancels_the_destination_in_dwell_mode_until_the_gaze_leaves_and_comes_back(monkeypatch):

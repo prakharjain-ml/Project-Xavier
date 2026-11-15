@@ -593,7 +593,7 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
                follow: str = "direct", route_m: np.ndarray | None = None, replan: bool = True,
                route_pending: bool = False):
     """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
-    whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it.
+    whether the chair may move (no dwell: moves on confirm; obstacle block, stop by default), the driver sends it.
 
     targets = the boxes the rider can choose; obstacles = EVERY tracked object (the planner skips the target
     itself). frame_t = when the camera frame all of this was computed from arrived. stop_requests / rearm = the
@@ -634,7 +634,8 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
     inputs = ControlInputs(intent=Intent(intent_target, 1.0 if intent_target != Target.NONE else 0.0, t=frame_t),
                            stop_requests=stop_requests, rearm=rearm, distance_cm=driver.distance_cm())
     before = ctrl.state
-    ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels)
+    # dwell_s=0: a confirm IS the decision; the chair moves on the very next tick (no 1.5 s second wait).
+    ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels, dwell_s=0)
     driver.send(command)
     if ctrl.state != before:
         log.info("state %s -> %s", before.value, ctrl.state.value)

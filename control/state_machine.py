@@ -77,10 +77,13 @@ def forward_blocked(distance_cm: int | None) -> bool:
 
 
 def step(prev: ControllerState, inputs: ControlInputs, now: float,
-         mapping: Mapping = provisional_mapping) -> tuple[ControllerState, MotorCommand, ControlStatus]:
-    """One control tick. Never raises: any error -> STOPPED (or stay E_STOP) and a stop command."""
+         mapping: Mapping = provisional_mapping, dwell_s: float = DWELL_S
+         ) -> tuple[ControllerState, MotorCommand, ControlStatus]:
+    """One control tick. Never raises: any error -> STOPPED (or stay E_STOP) and a stop command.
+    dwell_s: how long a target must be held before moving. 0 = move at once (object mode: the rider already
+    confirmed the destination on purpose, so a second wait is pointless)."""
     try:
-        nxt = _transition(prev, inputs, now)
+        nxt = _transition(prev, inputs, now, dwell_s)
     except Exception:
         log.exception("state machine error -> STOP")
         nxt = _fallback(prev)
@@ -97,7 +100,7 @@ def _fallback(prev: ControllerState) -> ControllerState:
     return ControllerState(state=State.E_STOP if latched else State.STOPPED, last_stop_t=prev.last_stop_t)
 
 
-def _transition(prev: ControllerState, inputs: ControlInputs, now: float) -> ControllerState:
+def _transition(prev: ControllerState, inputs: ControlInputs, now: float, dwell_s: float = DWELL_S) -> ControllerState:
     stop_times = [r.t for r in inputs.stop_requests]
     last_stop_t = max([prev.last_stop_t] + stop_times if prev.last_stop_t is not None else stop_times,
                       default=None)
@@ -125,12 +128,12 @@ def _transition(prev: ControllerState, inputs: ControlInputs, now: float) -> Con
     if not confident or (intent.target == Target.FWD and forward_blocked(inputs.distance_cm)):
         return stopped
 
-    if prev.state == State.STOPPED:  # Row: STOPPED -> DWELLING, dwell timer starts now
-        return ControllerState(State.DWELLING, intent.target, now, last_stop_t)
+    if prev.state == State.STOPPED:  # Row: STOPPED -> DWELLING, dwell timer starts now (no dwell: MOVING at once)
+        return ControllerState(State.MOVING if dwell_s <= 0 else State.DWELLING, intent.target, now, last_stop_t)
     if intent.target != prev.held_target:  # Rows: DWELLING/MOVING | target changes -> STOPPED
         return stopped
     if prev.state == State.DWELLING:  # Row: DWELLING | held for DWELL_S -> MOVING
-        held_long_enough = now - prev.dwell_start >= DWELL_S - 1e-9  # tolerance for float tick sums
+        held_long_enough = now - prev.dwell_start >= dwell_s - 1e-9  # tolerance for float tick sums
         return replace(prev, state=State.MOVING if held_long_enough else State.DWELLING, last_stop_t=last_stop_t)
     return replace(prev, last_stop_t=last_stop_t)  # Row: MOVING | same target keeps winning -> MOVING
 

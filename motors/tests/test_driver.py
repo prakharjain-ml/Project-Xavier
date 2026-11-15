@@ -76,9 +76,10 @@ def ramp(top, step=SLEW_STEP):
     return [min(top, step * i) for i in range(1, -(-top // step) + 1)]
 
 
-def test_slew_step_reaches_full_speed_in_about_one_second_at_the_send_rate():
+def test_slew_step_reaches_full_speed_in_about_two_seconds_at_the_send_rate():
+    """About 1 s at the old cap of 150; the cap is 300 since Sun Nov 15 (mock path only: the real chair uses chair.py)."""
     lines_to_full_speed = len(ramp(MAX_SPEED))
-    assert 0.8 <= lines_to_full_speed / CONTROL_HZ <= 1.2
+    assert 1.6 <= lines_to_full_speed / CONTROL_HZ <= 2.2
 
 
 def test_drive_command_ramps_up_one_step_per_line_until_it_reaches_the_target():

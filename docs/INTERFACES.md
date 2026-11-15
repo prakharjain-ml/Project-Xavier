@@ -34,7 +34,7 @@ After that, change this file first, then regenerate. Everything marked VERIFY ne
 | `BRIDGE_WATCHDOG_MS` | 200 | ESP32 commands zero if no laptop line arrives within this |
 | `BANDPASS_HZ` | (5, 40) | must clear 2 x 15 Hz = 30 Hz |
 | `ALPHA_BAND_HZ` | (8, 13) | eyes-closed detector band (`bci/alpha.py`) |
-| `MAX_SPEED` | 150 | kickoff default in firmware units (out of +-1000); VERIFY and tune in Phase 4 |
+| `MAX_SPEED` | 300 | firmware units (out of +-1000); raised from 150 on Sun Nov 15 at Prakhar's request |
 | `TURN_SPEED` | 120 | kickoff default in-place turn speed in firmware units; VERIFY in Phase 4 |
 | `OBSTACLE_STOP_CM` | 50 | kickoff default ultrasonic threshold in cm; VERIFY in Phase 4 |
 

@@ -47,8 +47,10 @@ from vision.detect_track import (
     separate_targets,
     steering_offset,
 )
+from interface import screens, window
 from vision import hud
-from vision.chevrons import place_guides, route_length_m
+from vision.chevrons import route_length_m
+from vision.manual_arrows import ARROW_NAMES, ARROW_WHEELS, arrow_at, draw_arrows
 from vision.scene_worker import SceneWorker
 from vision.smoothing import EuroState, glide_tracks, one_euro
 from vision.floor_route import Route
@@ -372,7 +374,8 @@ def to_view_point(point: tuple[float, float] | None) -> tuple[float, float] | No
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
          status: str, dwell_s: float | None = DWELL_S, mode: str = "Choose a destination",
          route: Route | None = None, route_m: np.ndarray | None = None,
-         camera: tuple[float, float, float] | None = None) -> np.ndarray:
+         camera: tuple[float, float, float] | None = None, arrows: bool = False,
+         arrow_active=None) -> np.ndarray:
     """The screen: camera picture with each selectable object outlined, the gaze cursor, and the status bars.
     `point` is the gaze as a fraction of the camera picture (see to_view_point). Returns CANVAS_H x CANVAS_W."""
     view = cv2.resize(frame, (CANVAS_W, VIEW_H))
@@ -399,18 +402,15 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
     # No cursor on screen (Prakhar, Sun Nov 15: it jumped around and distracted). The gaze only decides which
     # object is highlighted; see nearest_target().
     cursor = None
-    # The route the chair follows (--follow route), shown as floating chevrons along it (Google Live View style).
-    # camera = (hfov, height, pitch): the same numbers the planner used, so the chevrons sit over the route.
-    guides, label = (), None
-    if route_m is not None and camera is not None:
-        hfov, cam_h, pitch = camera
-        placed = place_guides(route_m, frame.shape[1], frame.shape[0], hfov, cam_h, pitch)
-        guides = tuple(replace(g, center=(g.center[0] * sx, g.center[1] * sy), size=g.size * sx) for g in placed)
-        chosen = next((t for t in targets if t.id == sel.confirmed), None)
-        if guides and chosen is not None:
-            label = f"Toward {chosen.label} · {route_length_m(route_m):.1f} m"
-    return hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status,
-                                         guides=guides, guide_label=label, clock=now))
+    # No floating chevrons (Prakhar, Sun Nov 15). The route is still planned and driven; only its length is shown.
+    chosen = next((t for t in targets if t.id == sel.confirmed), None)
+    label = f"Toward {chosen.label} · {route_length_m(route_m):.1f} m" if route_m is not None and chosen else None
+    screen = hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status,
+                                           guides=(), guide_label=label, clock=now))
+    if not arrows:
+        return screen
+    # Manual gaze arrows at the edges of the camera view; hud colours are RGB, OpenCV wants BGR.
+    return draw_arrows(cv2, screen, hud.TOP_BAR_H, VIEW_H, arrow_active, hud.FILL_RGB[::-1], hud.CYAN_RGB[::-1])
 
 
 def obstacle_points(tracks: list[Track], exclude_id: int | None, frame_w: int, hfov: float) -> np.ndarray:
@@ -554,6 +554,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                 hit = sel.confirmed if any(t.id == sel.confirmed for t in targets) else None
             else:
                 hit = nearest_target(view_point, boxes, hit) if view_point is not None else None
+            # Manual arrows: only while no destination is locked. Looking at one drives at once (no confirm).
+            arrow = arrow_at(view_point) if driver is not None and not locked else None
+            if arrow is not None:
+                hit = None  # an arrow, not an object: nothing to highlight or confirm
             before = sel.confirmed
             confirm = (confirm_event(confirm_mode, key, jaw) or blinked) and not locked
             if confirm:  # say what the confirm landed on, so a "nothing happened" can be explained from the log
@@ -577,7 +581,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             if driver is not None:
                 # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
                 stops = (StopRequest(StopSource.OPERATOR, now),) if key == stop_key(confirm_mode) else ()
-                sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
+                if arrow is not None and not stops:
+                    ctrl, drive_note = manual_tick(arrow, driver, ctrl, now)
+                else:
+                    sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
                                                         confirmations, obstacles=tracks, frame_h=frame.shape[0],
                                                         frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
                                                         follow=follow, route_m=route_m, replan=replanned,
@@ -606,8 +613,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
             drawn_targets = [drawn_tracks[t.id] for t in targets
                              if driver is None or sel.confirmed is None or t.id == sel.confirmed]  # locked: only it
-            cv2.imshow(WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
-                                    route, route_m, (hfov, cam_h, cam_pitch)))
+            window.show(cv2, WINDOW, draw(cv2, screen_frame, drawn_targets, boxes, sel, view_point, now, status, dwell_s, mode,
+                                    route, route_m, (hfov, cam_h, cam_pitch),
+                                    arrows=driver is not None and sel.confirmed is None, arrow_active=arrow))
         elapsed = max(time.monotonic() - start, 1e-6)
         log.info("screen ran at %.0f fps (%d passes in %.0f s)", total_frames / elapsed, total_frames, elapsed)
         log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
@@ -616,6 +624,17 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         return confirmations
     finally:
         worker.stop()
+
+
+def manual_tick(arrow: Target, driver, ctrl: ControllerState, now: float) -> tuple[ControllerState, str]:
+    """The rider is looking at a manual arrow: drive that way this pass (forward, backward or spin in place).
+    Called every pass while the gaze stays on it; the first pass off the arrow goes back to drive_tick, which
+    sends STOP when there is no destination."""
+    left, right = ARROW_WHEELS[arrow]
+    driver.send(MotorCommand(left, right, False, now))
+    if ctrl.state != State.MOVING:
+        log.info("MANUAL %s: wheels %d,%d", ARROW_NAMES[arrow], left, right)
+    return ControllerState(state=State.MOVING, held_target=arrow), f"  |  MANUAL {ARROW_NAMES[arrow]} wheels {left},{right}"
 
 
 def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
@@ -655,9 +674,7 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
 
 def show_text(cv2, text: str) -> None:
     """Full-screen instruction (used during the jaw calibration)."""
-    canvas = np.zeros((CANVAS_H, CANVAS_W, 3), np.uint8)
-    cv2.putText(canvas, text, (60, CANVAS_H // 2), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
-    cv2.imshow(WINDOW, canvas)
+    window.show(cv2, WINDOW, screens.jaw_instruction(CANVAS_W, CANVAS_H, text))  # same text, themed card
     cv2.waitKey(1)
 
 
@@ -791,8 +808,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as error:  # offline and not downloaded yet: plain detector, brackets instead of outlines
         log.warning("segmentation model unavailable (%s): corner brackets instead of outlines", str(error)[:80])
         model = YOLO(DEFAULT_MODEL)
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    window.open_fullscreen(cv2, WINDOW)  # frames are scaled to the real screen size (interface/window.py)
     jaw, driver = None, None
     if args.drive:
         from motors.driver import MotorDriver, open_serial

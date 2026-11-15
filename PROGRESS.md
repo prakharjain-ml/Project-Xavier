@@ -84,6 +84,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sun Nov 15, ~4 AM - Claude Code (Opus 5.5), for Prakhar (speed 300, manual gaze arrows, no chevrons)
+- MAX_SPEED 150 -> 300 (shared/protocol.py, docs/INTERFACES.md). Route driving now tops out around 200, manual forward 300.
+- vision/manual_arrows.py: 4 arrows at the edges of the camera view. Looking at one drives at once (forward/back 300,
+  spin 150), looking away stops. Active only while no destination is locked. Floating chevrons removed from the screen.
+- Evidence: `python -m pytest -q` -> 607 passed.
+
 ### Sun Nov 15, ~3:30 AM - Claude Code (Opus 5.5), for Prakhar (direct drive, on Prakhar's request)
 - Object mode no longer uses the safety state machine, dwell, stale-frame ("camera frozen") or arrival rules: a
   confirm sends the route's wheel speeds every pass until S/SPACE, X or a triple blink. If the object or the route

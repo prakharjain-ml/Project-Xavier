@@ -6,6 +6,7 @@ import math
 import numpy as np
 import pytest
 
+
 from control.navigation import (
     ARRIVE_M,
     WHEEL_DEAD_BAND,
@@ -16,7 +17,13 @@ from control.navigation import (
     obstacles_from_ultrasonic,
     to_wheels,
 )
-from shared.protocol import MAX_SPEED
+MAX_SPEED = 150  # the expected numbers in this file were worked out for this cap (it is 300 since Sun Nov 15)
+
+
+@pytest.fixture(autouse=True)
+def _speed_cap_these_numbers_were_worked_out_for(monkeypatch):
+    """The expected wheel numbers below were worked out for MAX_SPEED 150 (the cap until Sun Nov 15, now 300)."""
+    monkeypatch.setattr("control.navigation.MAX_SPEED", 150)
 
 CFG = NavConfig()
 

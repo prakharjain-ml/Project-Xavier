@@ -129,6 +129,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~9:27 PM - Claude Code (Fable 5.2), for Prakhar (camera roles: biggest face = eye camera)
+- Bug seen live: the gaze screen detected objects on the laptop camera (the rider's own face). The Pixel faced a teammate across the table, and the rule "the camera that sees a face is the eye camera" took the Pixel for the eye camera.
+- Fix (`vision/camera_roles.py`): the eye camera is the one with the widest face in view (the rider sits closest to the laptop camera); the forward camera may see people. Two faces of about the same size are refused with a message instead of guessed. `--eye-camera N --source M` still override.
+- Evidence: `python -m pytest -q` passes; live log after the fix: `cameras: 0 (widest face 0%), 1 (widest face 18%)` -> `eye camera = 1, forward camera = 0` (0 = Pixel, 1 = laptop, checked by saving one picture from each).
+- Limit: the mouse preview (`nav_preview`) has no rider at the screen, so it takes the camera with the smallest face, lowest number on a tie. If that picks the laptop camera, pass `--source 0`.
+
 ### Sat Nov 14, ~7:34 PM - Claude Code (Fable 5.2), for Prakhar (chair follows the route: `object_select --drive --follow route`)
 - Done: in route mode the drive screen plans the route to the chosen object on every camera frame (37 ms at 1920 x 1080), draws it (dashed: local floor only), converts it to metres and hands it to the follower. Default is still `--follow direct` (the older planner). New options `--cam-height`, `--cam-pitch`. The preview's bottom bar now shows what the follower would tell the wheels ("would drive: FORWARD + RIGHT").
 - New safety rule C13 (blind strip): an object that runs off the bottom of the picture has its foot in floor the camera cannot see. The route's first point must be far enough to the side of it, or there is no route. Found by checking the hall frame in metres: the route started 1.8 m ahead and 0.56 m right, and the straight run to it passed where the middle chair stands (1.4 m ahead).

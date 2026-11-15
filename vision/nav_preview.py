@@ -186,12 +186,9 @@ def open_source(args) -> tuple[object, str]:
         return StillImage(args.image), f"image {os.path.basename(args.image)}"
     source = args.source
     if source == "auto":
-        from vision.camera_roles import probe_cameras
+        from vision.camera_roles import forward_camera, probe_cameras
 
-        rooms = [p.index for p in probe_cameras() if not p.sees_face]
-        if not rooms:
-            raise RuntimeError("no forward camera found (every camera sees a face, or none is connected)")
-        source = str(rooms[0])
+        source = str(forward_camera(probe_cameras()))  # raises RuntimeError when no camera is connected
     return LatestFrameReader(parse_source(source), opener=open_capture), f"camera {source}"
 
 

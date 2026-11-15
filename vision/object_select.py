@@ -496,7 +496,7 @@ def main(argv: list[str] | None = None) -> int:
         from vision.camera_roles import assign_roles, probe_cameras
 
         probes = probe_cameras()
-        log.info("cameras: %s", ", ".join(f"{p.index}{' (face)' if p.sees_face else ''}" for p in probes))
+        log.info("cameras: %s", ", ".join(f"{p.index} (widest face {p.face_width:.0%} of the picture)" for p in probes))
         try:
             eye, forward = assign_roles(probes)
         except RuntimeError as error:

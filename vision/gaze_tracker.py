@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.eye_camera == "auto":
         from vision.camera_roles import probe_cameras
 
-        faces = [p.index for p in probe_cameras() if p.sees_face]
+        faces = [p.index for p in sorted(probe_cameras(), key=lambda p: -p.face_width) if p.sees_face]  # biggest face first
         if not faces:
             log.error("no camera sees a face: sit in front of the laptop camera")
             return 2

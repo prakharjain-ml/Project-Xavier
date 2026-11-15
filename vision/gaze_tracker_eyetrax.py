@@ -42,7 +42,7 @@ def resolve_camera(text: str) -> int:
         return int(text)
     from vision.camera_roles import probe_cameras
 
-    faces = [p.index for p in probe_cameras() if p.sees_face]
+    faces = [p.index for p in sorted(probe_cameras(), key=lambda p: -p.face_width) if p.sees_face]  # biggest face first
     if not faces:
         raise RuntimeError("no camera sees a face: sit in front of the laptop camera")
     return faces[0]

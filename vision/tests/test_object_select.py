@@ -949,3 +949,15 @@ def test_route_plan_text_reads_leg_by_leg():
     text = route_plan_text(np.array([[1.6, 0.0], [2.4, -0.8]]))
     assert text.startswith("forward 1.6 m, turn right 45 deg, forward 1.1 m")
     assert "total 2.7 m" in text
+
+
+def test_nearest_object_is_highlighted_even_when_the_gaze_lands_beside_it():
+    from vision.object_select import nearest_target
+
+    boxes = {1: (0.10, 0.4, 0.30, 0.8), 2: (0.60, 0.4, 0.80, 0.8)}
+    assert nearest_target((0.20, 0.6), boxes, None) == 1  # inside
+    assert nearest_target((0.36, 0.6), boxes, None) == 1  # beside object 1: still object 1
+    assert nearest_target((0.47, 0.6), boxes, 1) == 1  # nearer to 2 by less than the margin: keeps 1
+    assert nearest_target((0.55, 0.6), boxes, 1) == 2  # clearly nearer to 2: switches
+    assert nearest_target((0.45, 0.02), {1: (0.1, 0.6, 0.2, 0.9)}, None) is None  # far from everything
+    assert nearest_target((0.5, 0.5), {}, None) is None

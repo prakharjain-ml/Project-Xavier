@@ -88,6 +88,8 @@ BLINK_MIN_S, BLINK_MAX_CONFIRM_S = 0.05, 0.4  # a deliberate blink: eyes closed 
 DOUBLE_BLINK_GAP_S = 0.7  # the second blink must end within this time of the first
 PLAN_LOG_EVERY_S = 1.0  # the route in words and the wheel command go to the log this often
 PLAN_SPEED_MPS = 0.4  # the planner's top speed (NavConfig.max_speed), for the time estimate
+SWITCH_MARGIN = 0.05  # gaze must be this much nearer (fraction of the picture) to switch objects
+MAX_GAZE_DISTANCE = 0.25  # gaze farther than this from every object highlights nothing
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
 NAV_STEP_TAKES_FRAME_H = "frame_h" in inspect.signature(nav_step).parameters
@@ -227,6 +229,29 @@ def hit_boxes(targets: list[Track], frame_w: int, frame_h: int,
     return boxes
 
 
+def nearest_target(point: tuple[float, float], boxes: dict, current: int | None,
+                   switch_margin: float = SWITCH_MARGIN, max_distance: float = MAX_GAZE_DISTANCE) -> int | None:
+    """The object nearest to where the eyes point (0-1 picture coordinates), so something is always highlighted
+    even when webcam gaze lands a little beside the object. Distance is 0 inside an object's box.
+
+    Calm by design: the highlighted object only changes when another one is clearly nearer (by switch_margin),
+    and nothing is chosen when the gaze is far from every object (max_distance), e.g. looking at the sky."""
+    if not boxes:
+        return None
+    def distance(box) -> float:
+        x1, y1, x2, y2 = box
+        dx = max(x1 - point[0], 0.0, point[0] - x2)
+        dy = max(y1 - point[1], 0.0, point[1] - y2)
+        return math.hypot(dx, dy)
+    distances = {tid: distance(box) for tid, box in boxes.items()}
+    best = min(distances, key=distances.get)
+    if distances[best] > max_distance:
+        return None
+    if current in distances and distances[current] <= distances[best] + switch_margin:
+        return current  # keep the current one unless another is clearly nearer: no flicker between neighbours
+    return best
+
+
 def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now: float) -> tuple[float, float] | None:
     """Fresh gaze point plus the re-centring offset, or None if there is no usable fresh gaze."""
     if sample is None or sample.point is None or now - sample.t > STALE_INTENT_S:
@@ -319,7 +344,9 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
     cx, cy = CANVAS_W // 2, CANVAS_H // 2 - hud.TOP_BAR_H
     cv2.line(view, (cx - 15, cy), (cx + 15, cy), GREY, 2)
     cv2.line(view, (cx, cy - 15), (cx, cy + 15), GREY, 2)
-    cursor = None if point is None else (point[0] * CANVAS_W, point[1] * VIEW_H)
+    # No cursor on screen (Prakhar, Sun Nov 15: it jumped around and distracted). The gaze only decides which
+    # object is highlighted; see nearest_target().
+    cursor = None
     # The route the chair follows (--follow route), shown as floating chevrons along it (Google Live View style).
     # camera = (hfov, height, pitch): the same numbers the planner used, so the chevrons sit over the route.
     guides, label = (), None
@@ -455,7 +482,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
             view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
             boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
-            hit = pick_region(view_point, boxes, hit) if view_point is not None else None
+            hit = nearest_target(view_point, boxes, hit) if view_point is not None else None
             before = sel.confirmed
             confirm = confirm_event(confirm_mode, key, jaw) or blinked
             if confirm:  # say what the confirm landed on, so a "nothing happened" can be explained from the log

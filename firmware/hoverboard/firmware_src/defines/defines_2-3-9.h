@@ -46,7 +46,7 @@
 
 #define VBATT           PA4		// confirmed
 #define CURRENT_DC      PA6		// from 2-3-1/2-3-2, not verified
-#define SELF_HOLD       PB2		// from 2-3-1/2-3-2, not verified
+#define SELF_HOLD       PA7		// NOT the latch: no free pin held power (find_hold_pin.py, 2026-11-14). Harmless; power button replaced by a kill-key jumper.
 // BUTTON not defined on purpose: DISABLE_BUTTON is used for now (button bridged / board on charger)
 
 // Brushless Control DC (BLDC) defines

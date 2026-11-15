@@ -84,6 +84,24 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, 9:48 PM - Claude Code (Opus 5.5), for Keshav
+- Done: **Both wheels drive from the laptop.** Laptop -> ESP32 -> each board's 5-pin master-slave plug (P2 = PA2 TX,
+  P3 = PA3 RX; ESP32 GND to each board's SWD GND hole, because P1 is not a solid ground). Slave unlocked and flashed.
+  Both boards run `e235_single_usart1_hold.bin` (option 5: no 8-min auto power-off). `bridge.ino` auto-detects TX/RX per
+  board, `RIGHT_SIGN -1`, `MAX_SPEED 910`. Runs on battery. Shell closed.
+  New laptop library `firmware/chair_control/` (`from firmware.chair_control import Chair`; `forward/backward/turn_left/
+  turn_right/drive/stop(speed, seconds)`, 850 cap, accel ramp, auto-stop on exit), documented in its `README.md`.
+- In progress (file:function, state): nothing open.
+- Next step: run `python firmware/chair_control/example.py COM4` wheels-up. Then distance and degree moves: forward the
+  boards' odometry from `bridge.ino` to the laptop (new line type, needs a `docs/INTERFACES.md` change by its owner).
+- Known bugs: no free GD32 pin holds the board's power (searched with `find_hold_pin.py`, HIGH and LOW), so the power
+  button is replaced by a **kill key** (jumper on two wires outside the shell: pull = boards off). Pull it when parked
+  (battery drain). `docs/INTERFACES.md` "ESP32 to hoverboard" section is still wrong (see `firmware/README.md`).
+- Evidence (command + result): `bridge_bench_test.py COM4 120` -> both boards found, both wheels drive the right way
+  (Keshav, wheels up, on charger and on battery); `hold_check.py` -> `PA7 mode=OUTPUT out=HIGH` yet board off on
+  release; chair_control against a fake port -> ramp 60,120..840,850, clamp 850, stop lines on close;
+  `git apply --check robodurden-c63b29a.patch` on clean c63b29a -> clean.
+
 ### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: soft start, dongle guard)
 - Done (`motors/driver.py`): soft start. A wheel's speed rises by at most `SLEW_STEP = 8` per line (0 to the 150 cap in about 0.95 s at 20 lines/s); any decrease or stop is immediate; a reversal goes through zero; the ramp restarts from zero after a stop, a stale command or a reconnect (the first line after a reconnect was `C,20,150,150`, now `C,20,8,8`). `looks_like_openbci_dongle` refuses any `usbserial-<letter>...` or FTDI name, not only `-DM...`.
 - Pratosh please check: the first ramp lines (8 to 48) are inside the board's dead band, so the wheels start at about line 7. A reconnect still resumes driving without a new 1.5 s hold (now from zero). `COM3` and `/dev/ttyUSB0` cannot be told apart from a dongle by name.

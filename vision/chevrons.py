@@ -18,8 +18,8 @@ from dataclasses import dataclass
 import numpy as np
 
 GUIDE_COUNT = 5          # at most this many chevrons
-GUIDE_GAP_M = 0.45       # spacing along the route
-GUIDE_START_M = 0.15     # first chevron this far past the first floor point the camera can see
+GUIDE_GAP_M = 0.55       # spacing along the route
+GUIDE_START_M = 1.3      # first chevron this far along the route from the chair (nearer ones are below the picture)
 GUIDE_END_CLEAR_M = 0.25 # no chevron in the last 30 cm before the stop point
 GUIDE_LIFT_M = 0.35      # chevrons float this high above the floor
 GUIDE_WIDTH_M = 0.3      # real width of one chevron
@@ -29,6 +29,7 @@ MAX_TURN_RAD = math.radians(100)  # never point backwards (the planner never rev
 # a bit further than the true screen direction makes the way to go readable at a glance (as Live View does).
 ANGLE_GAIN = 1.5
 MIN_SIZE_PX = 14.0       # smaller than this is too far away to read: skip
+MAX_SIZE_FRAC = 0.13     # never wider than this share of the picture (a near chevron would cover the view)
 EDGE_SLACK = 0.15        # a chevron may sit this fraction of the frame outside it and still be drawn
 MIN_DEPTH_M = 0.05
 
@@ -83,7 +84,9 @@ def place_guides(route_m: np.ndarray | None, frame_w: int, frame_h: int, hfov_de
         return ()
     path = np.vstack([[0.0, 0.0], visible])
     along = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))])
-    first, last = float(along[1]) + GUIDE_START_M, float(along[-1]) - GUIDE_END_CLEAR_M
+    # Along the whole route from the chair, not only its visible part: a route of one long leg (the floor near the
+    # chair is never seen) still gets chevrons. Any that would land outside the picture are skipped below.
+    first, last = GUIDE_START_M, float(along[-1]) - GUIDE_END_CLEAR_M
     guides: list[Guide] = []
     for k in range(GUIDE_COUNT):
         s = first + k * GUIDE_GAP_M
@@ -100,9 +103,12 @@ def place_guides(route_m: np.ndarray | None, frame_w: int, frame_h: int, hfov_de
         centre, size = px[0], 2.0 * float(np.linalg.norm(px[1] - px[0]))
         if size < MIN_SIZE_PX or not _on_screen(centre, frame_w, frame_h):
             continue
-        dx, dy = px[2] - px[0]
-        # Screen direction of travel -> rotation of an "up" chevron. Up the screen = 0; to the left = positive.
-        angle = float(np.clip(ANGLE_GAIN * math.atan2(-dx, -dy), -MAX_TURN_RAD, MAX_TURN_RAD))
+        size = min(size, MAX_SIZE_FRAC * frame_w)
+        # Point the way the route heads compared with where the chair faces now: straight ahead = up, a route
+        # going right = tilted right. (The on-screen direction of a straight leg from the chair is always "up"
+        # the picture, which would hide the turn the chair has to make.) Left = positive, as on screen.
+        travel = ahead - at
+        angle = float(np.clip(ANGLE_GAIN * math.atan2(travel[1], travel[0]), -MAX_TURN_RAD, MAX_TURN_RAD))
         guides.append(Guide((float(centre[0]), float(centre[1])), size, angle, float(depth[0]), len(guides)))
     return tuple(guides)
 

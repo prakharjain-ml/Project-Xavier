@@ -40,7 +40,7 @@ def test_route_bending_left_tilts_the_chevrons_to_the_left_and_right_to_the_righ
 
 
 def test_no_chevron_in_the_last_stretch_before_the_stop_point():
-    guides = guides_for([[1.2, 0.0], [1.5, 0.0]])  # 1.5 m route: first slot at 1.35 m, end clear from 1.25 m
+    guides = guides_for([[1.2, 0.0], [1.5, 0.0]])  # 1.5 m route: first slot at 1.3 m, end clear from 1.25 m
     assert guides == ()
 
 
@@ -64,3 +64,10 @@ def test_hud_draws_the_chevrons_and_label_without_touching_the_input_frame():
     drawn = hud.render(frame, hud.HudState(guides=guides, guide_label="Toward chair · 2.4 m", clock=1.0))
     assert np.array_equal(frame, before)
     assert (np.abs(drawn.astype(int) - plain.astype(int)).sum(axis=2) > 60).sum() > 2000  # clearly drawn
+
+
+def test_a_route_of_one_long_leg_still_gets_chevrons():
+    """Seen in simulation: the planner's route was a single point 2.8 m away (the floor near the chair is never
+    visible), and the first version placed chevrons only after the first route point, so none appeared."""
+    guides = place_guides(np.array([[2.6, -1.1]]), 1920, 1080, 85.5, 0.89, 0.0)
+    assert len(guides) >= 2 and all(g.angle < 0 for g in guides)  # pointing to the right, toward the target

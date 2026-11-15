@@ -86,6 +86,8 @@ STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-ar
 KEY_MODE_STOP_KEY = ord("s")
 BLINK_MIN_S, BLINK_MAX_CONFIRM_S = 0.05, 0.4  # a deliberate blink: eyes closed this long
 DOUBLE_BLINK_GAP_S = 0.7  # the second blink must end within this time of the first
+PLAN_LOG_EVERY_S = 1.0  # the route in words and the wheel command go to the log this often
+PLAN_SPEED_MPS = 0.4  # the planner's top speed (NavConfig.max_speed), for the time estimate
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
 NAV_STEP_TAKES_FRAME_H = "frame_h" in inspect.signature(nav_step).parameters
@@ -252,6 +254,25 @@ def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look
     return f"{how} to confirm  |  {keys}"
 
 
+def route_plan_text(route_m: np.ndarray) -> str:
+    """The route in words, leg by leg from the chair: "turn right 23 deg, forward 1.6 m, turn left 10 deg, ..."."""
+    path = np.vstack([[0.0, 0.0], np.asarray(route_m, float).reshape(-1, 2)])
+    heading, parts, total = 0.0, [], 0.0
+    for a, b in zip(path, path[1:]):
+        dx, dy = b - a
+        length = float(np.hypot(dx, dy))
+        if length < 0.05:
+            continue
+        turn = math.degrees(math.atan2(dy, dx)) - heading
+        turn = (turn + 180) % 360 - 180  # the shorter way round
+        if abs(turn) >= 5:
+            parts.append(f"turn {'left' if turn > 0 else 'right'} {abs(turn):.0f} deg")
+        parts.append(f"forward {length:.1f} m")
+        heading += turn
+        total += length
+    return f"{', '.join(parts)} (total {total:.1f} m, about {total / PLAN_SPEED_MPS:.0f} s at {PLAN_SPEED_MPS} m/s)"
+
+
 def jaw_meter(level: float | None) -> str:
     """Live clench level for the status bar: ten blocks, full at this rider's threshold."""
     if level is None:
@@ -373,6 +394,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     planned_for = None  # the destination the worker's newest result was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     blink_state = BlinkConfirm()
+    last_plan_log = -math.inf
     shown = None  # newest camera picture, for the screen only
     gaze_filter, drawn_tracks = EuroState(), {}  # smoothing state: cursor filter, outlines as drawn last time
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
@@ -447,7 +469,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             if sel.confirmed is not None and sel.confirmed != before:
                 chosen = next(t for t in targets if t.id == sel.confirmed)
                 dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
-                how = {"dwell": "dwell", "key": "J key", "jaw": "jaw clench"}[confirm_mode]
+                how = {"dwell": "dwell", "key": "SPACE key", "jaw": "jaw clench", "blink": "double blink"}[confirm_mode]
                 line = (f"CONFIRMED {chosen.label} #{chosen.id} {dist} steer "
                         f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
                 log.info(line)
@@ -461,6 +483,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                                                         frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
                                                         follow=follow, route_m=route_m, replan=replanned,
                                                     route_pending=planned_for != sel.confirmed)
+                if follow == "route" and now - last_plan_log >= PLAN_LOG_EVERY_S:
+                    last_plan_log = now  # once a second: the plan and what the wheels are being told, in words
+                    log.info("PLAN %s | sending: %s", route_plan_text(route_m) if route_m is not None else
+                             ("no route yet" if sel.confirmed is not None else "no destination"), drive_note.strip(" |"))
             total_frames += 1
             gaze_frames += point is not None
             # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.

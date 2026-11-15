@@ -63,7 +63,7 @@ finally:
 lines = port.lines()
 drive = [l for l in lines if l.startswith("C,")]
 print(f"--- scene: {SCENE}")
-print("log:", [l for l in log_lines if any(w in l for w in ("CONFIRMED", "state", "ARRIVED", "route"))][:8])
+print("log:", [l for l in log_lines if any(w in l for w in ("CONFIRMED", "state", "ARRIVED", "PLAN"))][-4:])
 print(f"serial lines: {len(lines)} total, {len(drive)} drive lines; first drive: {drive[:3]}; last: {drive[-3:]}")
 for t, s in statuses[::40][:8]: print(f"  t={t:4.1f}s status: {s}")
 from vision.chevrons import place_guides

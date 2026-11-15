@@ -939,3 +939,13 @@ def test_two_short_blinks_close_together_confirm_and_other_patterns_do_not():
     assert not any(feed([(False, 0.0), (True, 0.1), (False, 0.25)]))  # one blink
     assert not any(feed([(True, 0.1), (False, 0.25), (True, 1.5), (False, 1.65)]))  # second too late
     assert not any(feed([(True, 0.1), (False, 1.0), (True, 1.2), (False, 1.35)]))  # first closure too long
+
+
+def test_route_plan_text_reads_leg_by_leg():
+    import numpy as np
+
+    from vision.object_select import route_plan_text
+
+    text = route_plan_text(np.array([[1.6, 0.0], [2.4, -0.8]]))
+    assert text.startswith("forward 1.6 m, turn right 45 deg, forward 1.1 m")
+    assert "total 2.7 m" in text

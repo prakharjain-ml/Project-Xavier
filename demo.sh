@@ -42,9 +42,24 @@ need_pixel() {
   fi
 }
 
+need_headset_wifi() {
+  # The headset's Wi-Fi shield is only reachable from its own network, where the laptop gets a 192.168.4.x address.
+  if ! ifconfig 2>/dev/null | grep -q "inet 192\.168\.4\."; then
+    echo "The laptop is not on the headset's Wi-Fi, so the jaw clench cannot be read." >&2
+    echo "Fix: quit the OpenBCI GUI (Cmd+Q), then join the 'OpenBCI-xxxx' Wi-Fi network and run this again." >&2
+    echo "(No headset right now? Use the dwell version instead: Start dwell.command or Start chair-dwell.command.)" >&2
+    exit 2
+  fi
+  if pgrep -f OpenBCI_GUI >/dev/null; then
+    echo "The OpenBCI GUI is still open and holds the headset. Quit it (Cmd+Q) and run this again." >&2
+    exit 2
+  fi
+}
+
 mode="${1:-}"
 shift || true
 case "$mode" in dwell|jaw|mock|chair|chair-dwell|preview) need_pixel ;; esac
+case "$mode" in jaw|mock|chair) need_headset_wifi ;; esac
 case "$mode" in
   dwell)       exec python -m vision.object_select --confirm dwell "${CAMS[@]}" "$@" ;;
   jaw)         exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" "$@" ;;

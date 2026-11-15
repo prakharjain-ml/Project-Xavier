@@ -12,10 +12,12 @@ flashing and wiring the hoverboard mainboards.
 ## Files
 | Path | What |
 | --- | --- |
-| `bridge/bridge.ino` | ESP32-S3 sketch: `C`/`S` line parser, 200 ms watchdog, HC-SR04 read, forward-obstacle stop, clamp to `MAX_SPEED`, hoverboard frame encoder |
+| `bridge/bridge.ino` + `bridge/hover_link.h` | ESP32-S3 sketch: `C`/`S` line parser, 200 ms watchdog, HC-SR04 read, forward-obstacle stop, clamp to `MAX_SPEED`, hoverboard frame encoder, per-board TX/RX auto-detect (listens for the board's 0xABCD feedback before it sends) |
+| `chair_control/` | **Laptop Python library** `Chair`: `forward/backward/turn_left/turn_right/drive/stop(speed, seconds)`, 850 speed cap, acceleration ramp, auto-stop. Full docs in `chair_control/README.md` |
 | `hoverboard/flash_tools/` | Windows double-click scripts (OpenOCD + ST-Link V2) to unlock, flash and debug the GD32E235 boards, plus prebuilt `.bin` files |
 | `hoverboard/firmware_src/` | Our board layout `defines_2-3-9.h` and a patch against RoboDurden's firmware, to rebuild the `.bin` files |
 | `hoverboard/tools/bridge_bench_test.py` | HUMAN ONLY wheels-in-the-air test of laptop -> bridge -> hoverboard |
+| `hoverboard/flash_tools/find_hold_pin.py`, `hold_check.py`, `hold_test2.py` | Self-hold (power latch) pin search over SWD. Result: no free pin holds power (see pin map) |
 
 ## The hoverboard hardware (verified by Keshav, Nov 14)
 - Split hoverboard, two **YK187** mainboards, MCU **GD32E235** (pin compatible with GD32E230, runs the E230 = `TARGET 3` build).
@@ -36,14 +38,14 @@ flashing and wiring the hoverboard mainboards.
 | Battery voltage | PA4 | VERIFIED (reads ~31 V at 28.5 V charger: scale ~9% high, not calibrated yet) |
 | DC current sense | PA6 | NOT verified (copied from layouts 2-3-1 / 2-3-2) |
 | Phase current A / B | PB0 / PB1 | NOT verified (from 2-3-2) |
-| Self-hold (keeps power on) | PB2 | NOT verified (from 2-3-1 / 2-3-2). Until verified: bridge or clamp the power button |
-| Power button | - | not used (`DISABLE_BUTTON`) |
+| Self-hold (keeps power on) | none found | **Every free pin was driven HIGH and LOW with `find_hold_pin.py`: none keeps the board on.** Firmware still drives PA7 (harmless). The power button is replaced by a **kill key**: two Dupont wires from the button's switch pins out of the shell, closed by a jumper. Key in = on, key out = off |
+| Power button | - | not used (`DISABLE_BUTTON`; its cable is unplugged, see kill key) |
 | LEDs, buzzer | - | not mapped (PF1 is a hall here, so the 2-3-x LED pins do not apply) |
 | USART0 round pads "GND / ? / TX / RX" next to the white plugs | PB6 / PB7 | **NOT CONNECTED**: series resistors R10/R11 are not fitted (pads do not beep to chip pins 42/43). Unusable without soldering |
-| **ESP32 link = 4-pin master-slave plug (USART1)** | **PA2 = board TX (chip pin 12), PA3 = board RX (chip pin 13)** | from the E230 template; beep-test which plug pin is PA2 / PA3 / GND, the 4th is VCC (do not use) |
+| **ESP32 link = 5-pin master-slave plug (USART1)** | **P2 = PA2 = board TX, P3 = PA3 = board RX** | VERIFIED on both boards (pin toggling over SWD). P1 = 0 V but **not a solid ground** (60 Hz hum garbled every byte): ESP32 GND goes to the **SWD GND hole**. P4 unused. **P5 = ~14 V, never connect**. The 4-pin plug is NOT connected to PA2/PA3 |
 | **Never connect** | VCC / 15 V pin of any header | to the ESP32 or ST-Link |
 
-The slave board is very likely the same design; confirm its hall pins with `hall_watch.py` before flashing `e235_slave.bin`.
+The slave board is the same design (unlocked, test03 hall order confirmed, same firmware).
 
 ## Hoverboard UART protocol (VERIFIED against the flashed firmware)
 This replaces the provisional "ESP32 to hoverboard" section of `docs/INTERFACES.md` (that section assumed the
@@ -63,7 +65,8 @@ EFeru FOC firmware: 0xABCD, 115200 baud, 8 bytes). **`docs/INTERFACES.md` still 
 ## Firmware builds (prebuilt in `hoverboard/flash_tools/`)
 | File | Board | What it does |
 | --- | --- | --- |
-| **`e235_single_usart1.bin`** | **both boards** | **Used setup.** `SINGLE` + `REMOTE_UART` on USART1 (4-pin plug). Each board = one wheel, own ESP32 UART, no soldering |
+| **`e235_single_usart1_hold.bin`** (option 5) | **both boards** | **Used setup.** Same as `e235_single_usart1.bin` + `NO_INACTIVITY_TIMEOUT` (no 8-min auto power-off, which would freeze a board) + `KEEP_SELF_HOLD` (note: `DISABLE_BUTTON` used to `#undef SELF_HOLD`) |
+| `e235_single_usart1.bin` (option 1) | both boards | `SINGLE` + `REMOTE_UART` on USART1 (5-pin plug). Each board = one wheel, own ESP32 UART, no soldering. Has the 8-min inactivity power-off |
 | `e235_single_uart.bin` | one board | `SINGLE` + `REMOTE_UART` on USART0 (PB6/PB7 pads, not connected on YK187) |
 | `e235_master.bin` | master | `MASTER` + `REMOTE_UART` on USART0 pads + slave over the cable (needs R10/R11 bridged) |
 | `e235_slave.bin` | slave | `SLAVE` for `e235_master.bin` |
@@ -80,8 +83,8 @@ git checkout c63b29a33175d89caa2abbe7a987e3db38b75640
 git apply <this repo>/firmware/hoverboard/firmware_src/robodurden-c63b29a.patch
 cd HoverBoardGigaDevice
 pip install platformio
-pio run -e e235_master          # also: e235_slave, e235_single_uart, e235_test, e230_autodetect_rtt
-arm-none-eabi-objcopy -O binary .pio/build/e235_master/firmware.elf e235_master.bin
+pio run -e e235_single_usart1    # the used build (= option 5 .bin); also: e235_master, e235_slave, e235_single_uart, e235_test
+arm-none-eabi-objcopy -O binary .pio/build/e235_single_usart1/firmware.elf e235_single_usart1_hold.bin
 ```
 The patch adds `Inc/defines/defines_2-3-9.h` and PlatformIO envs, makes `LAYOUT`, `BAT_CELLS`, `MASTER`/`SLAVE`
 and `REMOTE_UART` settable from `platformio.ini`, adds `FLASH_SIZE_OVERRIDE`, and lowers autodetect's motor power
@@ -112,9 +115,10 @@ for long debug sessions.
 ## ESP32 bridge
 - Arduino IDE 2 + "esp32 by Espressif Systems" board package; board **ESP32S3 Dev Module**.
 - If you plug into the S3's native USB port, set **Tools -> USB CDC On Boot -> Enabled** so `Serial` is the USB port.
-- Wiring (`DUAL_SINGLE 1`, the default): unplug the original cable between the boards, then on each board's 4-pin
-  master-slave plug: LEFT board PA3 <- ESP32 GPIO17, PA2 -> ESP32 GPIO18, GND; RIGHT board PA3 <- GPIO15,
-  PA2 -> GPIO16, GND. Never the VCC pin. Set `LEFT_SIGN` / `RIGHT_SIGN` after a wheels-up test.
+- Wiring (VERIFIED, both wheels driving): remove the original 5-pin cable between the boards. Six ESP32 wires:
+  LEFT (master) 5-pin P2/P3 <-> GPIO17/18, RIGHT (slave) 5-pin P2/P3 <-> GPIO15/16 (the sketch finds TX/RX by itself),
+  one ESP32 GND to **each** board's SWD GND hole. Never P1 as ground, never P5. Signs: `LEFT_SIGN 1`, `RIGHT_SIGN -1`
+  (motors are mirrored). `MAX_SPEED 910` in the sketch; the Python library caps at 850 by default.
 - HC-SR04: TRIG GPIO4, ECHO GPIO5 through a 1k/2k divider (ECHO is 5 V), VCC 5 V, GND.
 - Laptop protocol: `docs/INTERFACES.md` ("Laptop to ESP32 bridge"). Bench test: `python firmware/hoverboard/tools/bridge_bench_test.py <port>`.
 

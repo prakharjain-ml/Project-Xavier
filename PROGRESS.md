@@ -40,6 +40,24 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sat Nov 14, 9:48 PM - Claude Code (Opus 5.5), for Keshav
+- Done: **Both wheels drive from the laptop.** Laptop -> ESP32 -> each board's 5-pin master-slave plug (P2 = PA2 TX,
+  P3 = PA3 RX; ESP32 GND to each board's SWD GND hole, because P1 is not a solid ground). Slave unlocked and flashed.
+  Both boards run `e235_single_usart1_hold.bin` (option 5: no 8-min auto power-off). `bridge.ino` auto-detects TX/RX per
+  board, `RIGHT_SIGN -1`, `MAX_SPEED 910`. Runs on battery. Shell closed.
+  New laptop library `firmware/chair_control/` (`from firmware.chair_control import Chair`; `forward/backward/turn_left/
+  turn_right/drive/stop(speed, seconds)`, 850 cap, accel ramp, auto-stop on exit), documented in its `README.md`.
+- In progress (file:function, state): nothing open.
+- Next step: run `python firmware/chair_control/example.py COM4` wheels-up. Then distance and degree moves: forward the
+  boards' odometry from `bridge.ino` to the laptop (new line type, needs a `docs/INTERFACES.md` change by its owner).
+- Known bugs: no free GD32 pin holds the board's power (searched with `find_hold_pin.py`, HIGH and LOW), so the power
+  button is replaced by a **kill key** (jumper on two wires outside the shell: pull = boards off). Pull it when parked
+  (battery drain). `docs/INTERFACES.md` "ESP32 to hoverboard" section is still wrong (see `firmware/README.md`).
+- Evidence (command + result): `bridge_bench_test.py COM4 120` -> both boards found, both wheels drive the right way
+  (Keshav, wheels up, on charger and on battery); `hold_check.py` -> `PA7 mode=OUTPUT out=HIGH` yet board off on
+  release; chair_control against a fake port -> ramp 60,120..840,850, clamp 850, stop lines on close;
+  `git apply --check robodurden-c63b29a.patch` on clean c63b29a -> clean.
+
 ### Sat Nov 14, morning - Claude Code (Opus 5.5), for Keshav
 - Done: Master hoverboard board (YK187, GD32E235) unlocked over SWD, factory firmware erased, RoboDurden Gen2.x-GD32
   firmware running. Pin map in `firmware/README.md` (halls PF1/PA0/PC15 found by hand-turning the wheel, BLDC normal

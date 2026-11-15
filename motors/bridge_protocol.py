@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from shared.protocol import MAX_SPEED, MotorCommand
+from shared.protocol import WHEEL_LIMIT, MotorCommand
 
 BRIDGE_STATES = frozenset({"OK", "OBSTACLE", "WATCHDOG", "ESTOP"})
 _STATUS = re.compile(r"D,(-?\d+),([A-Z_]+)")
@@ -23,7 +23,7 @@ class BridgeStatus:
 
 def clamp_speed(value: int) -> int:
     """Clamp again here even though control already clamps: defence in depth (rules/50-motors)."""
-    return max(-MAX_SPEED, min(MAX_SPEED, int(value)))
+    return max(-WHEEL_LIMIT, min(WHEEL_LIMIT, int(value)))
 
 
 def encode_command(command: MotorCommand, seq: int) -> str:

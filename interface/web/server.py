@@ -32,6 +32,7 @@ log = logging.getLogger("interface.web.server")
 HOST, PORT = "127.0.0.1", 8765
 FRONTEND_DIST = Path(__file__).with_name("frontend") / "dist"
 TELEMETRY_HZ = 15.0
+READINESS_S = 2.0
 CALIBRATION_PATH = "data/raw/gaze_calibration.json"
 HOSTED_ORIGIN = "https://projectxavier.vercel.app"  # the same page, hosted; it talks to THIS laptop only
 
@@ -64,8 +65,54 @@ def make_perception(mode: str, action: dict):
     return LivePerception(forward, eye, CALIBRATION_PATH, load_hfov())
 
 
-def create_app(session: Session | None = None, port: int = PORT) -> FastAPI:
-    session = session or Session(make_perception)
+def chair_driver(serial_port: str):
+    """The real hoverboard through Keshav's chair_control library, as `demo.sh chair` uses. HUMANS ONLY."""
+    from motors.chair_driver import ChairDriver
+    from motors.driver import looks_like_openbci_dongle
+    from interface.web.session import RecordingDriver
+
+    if looks_like_openbci_dongle(serial_port):
+        raise SystemExit(f"{serial_port} looks like the OpenBCI dongle, not the ESP32: refusing to send motor commands")
+    return lambda: RecordingDriver(ChairDriver(serial_port), serial_port)
+
+
+def device_readiness(serial_port: str | None) -> dict[str, bool]:
+    """Read-only checks for the start screen (nothing is opened): Pixel present, on the headset's Wi-Fi, a saved
+    eye calibration, and whether a real chair port was given. The headset is fully verified only at Start."""
+    from interface.launcher_modes import headset_ready, room_camera_ready
+    from vision.gaze_link import calibration_ready, gaze_backend
+
+    return {"phone_camera": room_camera_ready(), "headset_wifi": headset_ready(),
+            "eye_calibration": calibration_ready(gaze_backend(), CALIBRATION_PATH), "chair": serial_port is not None}
+
+
+class Readiness:
+    """Runs device_readiness on a background thread every READINESS_S, so no request waits for system_profiler."""
+
+    def __init__(self, serial_port: str | None) -> None:
+        import threading
+
+        self.value: dict[str, bool] = {}
+        self._serial, self._stop = serial_port, threading.Event()
+        threading.Thread(target=self._run, name="readiness", daemon=True).start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.value = device_readiness(self._serial)
+            except Exception:  # a failing check shows "not ready", never crashes the server
+                log.exception("device check failed")
+                self.value = {}
+            self._stop.wait(READINESS_S)
+
+
+def create_app(session: Session | None = None, port: int = PORT, serial_port: str | None = None,
+               readiness: "Readiness | None" = None) -> FastAPI:
+    if session is None:
+        session = Session(make_perception, chair_driver(serial_port)) if serial_port else Session(make_perception)
     origins = allowed_origins(port)
 
     def forward_source():
@@ -74,6 +121,7 @@ def create_app(session: Session | None = None, port: int = PORT) -> FastAPI:
         return reader.latest() if reader is not None else None
 
     feed = JpegFeed(forward_source)
+    devices = readiness or Readiness(serial_port)
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -89,6 +137,7 @@ def create_app(session: Session | None = None, port: int = PORT) -> FastAPI:
         finally:
             task.cancel()
             feed.stop()
+            devices.stop()
             session.shutdown("Server stopped")  # final STOP lines, workers and gaze process stopped
 
     app = FastAPI(title="Xavier", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -168,6 +217,7 @@ def create_app(session: Session | None = None, port: int = PORT) -> FastAPI:
                 started = asyncio.get_running_loop().time()
                 data = telemetry.snapshot(session, client, session._clock())
                 data["diag"]["encode_ms"] = round(feed.encode_ms, 1)
+                data["ready"] = devices.value
                 await socket.send_text(json.dumps(data))
                 elapsed = asyncio.get_running_loop().time() - started
                 await asyncio.sleep(max(0.0, 1 / TELEMETRY_HZ - elapsed))

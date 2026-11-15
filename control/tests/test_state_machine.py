@@ -18,6 +18,7 @@ from shared.protocol import (
     StopRequest,
     StopSource,
     Target,
+    WHEEL_LIMIT,
 )
 
 NOW = 100.0
@@ -168,7 +169,7 @@ def test_dwelling_broken(bad):
 # --- Row: MOVING | same target keeps winning -> MOVING (mapped command) ---------------------------------
 @pytest.mark.parametrize("target, wheels", [
     (Target.FWD, (MAX_SPEED, MAX_SPEED)),
-    (Target.BACK, (-(MAX_SPEED // 2), -(MAX_SPEED // 2))),
+    (Target.BACK, (-MAX_SPEED, -MAX_SPEED)),  # same speed as forward since Sun Nov 15
     (Target.LEFT, (-TURN_SPEED, TURN_SPEED)),
     (Target.RIGHT, (TURN_SPEED, -TURN_SPEED)),
 ])
@@ -180,7 +181,7 @@ def test_moving_emits_provisional_mapping(target, wheels):
 
 def test_mapping_output_is_clamped():
     nxt, cmd, _ = step(in_state(State.MOVING), ControlInputs(intent=intent()), NOW, mapping=lambda _t: (5000, -5000))
-    assert (cmd.left, cmd.right) == (MAX_SPEED, -MAX_SPEED)
+    assert (cmd.left, cmd.right) == (WHEEL_LIMIT, -WHEEL_LIMIT)
 
 
 # --- Row: MOVING | target changes, NONE, or low confidence -> STOPPED -----------------------------------

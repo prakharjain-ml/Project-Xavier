@@ -27,6 +27,7 @@ from shared.protocol import (
     OBSTACLE_STOP_CM,
     STALE_INTENT_S,
     TURN_SPEED,
+    WHEEL_LIMIT,
     ControlStatus,
     Intent,
     MotorCommand,
@@ -65,7 +66,7 @@ def provisional_mapping(target: Target) -> tuple[int, int]:
     """
     return {
         Target.FWD: (MAX_SPEED, MAX_SPEED),
-        Target.BACK: (-(MAX_SPEED // 2), -(MAX_SPEED // 2)),  # reverse slower: the rider cannot see behind
+        Target.BACK: (-MAX_SPEED, -MAX_SPEED),  # same speed as forward (Prakhar, Sun Nov 15)
         Target.LEFT: (-TURN_SPEED, TURN_SPEED),  # turn in place
         Target.RIGHT: (TURN_SPEED, -TURN_SPEED),
     }.get(target, (0, 0))
@@ -139,7 +140,7 @@ def _transition(prev: ControllerState, inputs: ControlInputs, now: float, dwell_
 
 
 def _clamp(value: int) -> int:
-    return max(-MAX_SPEED, min(MAX_SPEED, int(value)))
+    return max(-WHEEL_LIMIT, min(WHEEL_LIMIT, int(value)))
 
 
 def _command(state: ControllerState, inputs: ControlInputs, now: float, mapping: Mapping) -> MotorCommand:

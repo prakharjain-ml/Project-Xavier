@@ -147,3 +147,40 @@ select, input[type="number"] { background: var(--surface-2); color: var(--text);
 .diag { font: 12px/1.6 ui-monospace, "SF Mono", monospace; color: var(--muted); }
 .diag summary { font-family: var(--font); font-weight: 600; cursor: pointer; }
 .watching { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 10; }
+
+/* core layout additions */
+.card.center { text-align: center; display: grid; justify-items: center; gap: 20px; width: min(560px, 100%); }
+.card.center h1 { margin: 0; }
+.card.center .lead { margin: 0; }
+.btn.small { min-height: 40px; padding: 0 16px; font-size: 14px; }
+.side { justify-content: space-between; }
+
+/* start screen: device checklist */
+.card.checklist { width: min(560px, 100%); display: grid; gap: 24px; }
+.card.checklist h2 { margin: 0; }
+.checklist ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; border-radius: var(--radius); overflow: hidden; }
+.checklist li { display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 14px; padding: 16px 18px; background: var(--surface-2); }
+.checklist .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--faint); }
+.checklist li.ok .dot { background: var(--success); }
+.checklist li.bad .dot { background: var(--warning); }
+.checklist .name { font-weight: 600; }
+.checklist .state { color: var(--muted); font-size: 14px; text-align: right; }
+.checklist li.bad .state { color: var(--warning); }
+.checklist .btn { width: 100%; }
+
+/* drive side panel */
+.side { gap: 14px; padding: 18px; }
+.mode-switch { width: 100%; }
+.mode-switch button { flex: 1; min-height: 44px; }
+.dest-panel { display: grid; gap: 6px; padding: 20px; }
+.dest-panel .dest { font-size: 28px; line-height: 1.15; letter-spacing: -0.01em; }
+.dest-panel .btn { margin-top: 8px; }
+.jaw { display: grid; gap: 12px; }
+.jaw-head { display: flex; justify-content: space-between; align-items: center; }
+.jaw-state { font-size: 13px; font-weight: 700; color: var(--muted); }
+.jaw-state.on { color: var(--success); }
+.jaw-bar { position: relative; height: 10px; border-radius: 999px; background: var(--surface); overflow: hidden; }
+.jaw-bar i { position: absolute; inset: 0; transform-origin: left; background: var(--primary); transition: transform 90ms linear; }
+.jaw-bar i.on { background: var(--success); }
+.jaw-bar b { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); opacity: 0.6; }
+.stage { background: radial-gradient(80% 80% at 50% 50%, #0d141c 0%, #05080b 100%); }

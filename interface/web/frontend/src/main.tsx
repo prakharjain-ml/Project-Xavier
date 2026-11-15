@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { connect, sendAction, takeControl } from "./api";
 import type { Pointer } from "./api";
 import { DriveView } from "./drive";
-import { DeviceSetup, Disconnected, ErrorScreen, EyeCalibration, Welcome } from "./screens";
+import { Disconnected, ErrorScreen, JawCalibration, Start } from "./screens";
 import type { Telemetry } from "./types";
 import "./styles.css";
 
@@ -69,16 +69,12 @@ function useKeys(t: Telemetry | null, act: Act): void {
   }, [t, act]);
 }
 
-function TopBar({ t, onFullscreen }: { t: Telemetry | null; onFullscreen: () => void }) {
+function TopBar({ onFullscreen }: { onFullscreen: () => void }) {
   return (
     <header className="topbar">
       <div className="brand"><span className="brand-mark" aria-hidden="true" />XAVIER</div>
       <div className="spacer" />
-      {t?.session && <span className={`chip ${t.mode === "mock" ? "practice" : "ok"}`}><span className="dot" />{t.mode === "mock" ? "Practice · nothing moves" : "Live cameras"}</span>}
-      {t?.session && <span className="chip">Confirm: {t.confirm}</span>}
-      {t?.motor && <span className={`chip ${t.motor.stop ? "" : "warn"}`}><span className="dot" />Motors {t.motor.stop ? "stopped" : "moving"} ({t.motor.port})</span>}
-      <span className={`chip ${t ? "ok" : "warn"}`}><span className="dot" />{t ? "Connected" : "Disconnected"}</span>
-      <button className="btn ghost" style={{ minHeight: 40 }} onClick={onFullscreen}>Full screen</button>
+      <button className="btn ghost small" onClick={onFullscreen}>Full screen</button>
     </header>
   );
 }
@@ -123,15 +119,14 @@ function App() {
 
   let body;
   if (!t) body = <Disconnected />;
-  else if (flow === "IDLE" || flow === "SESSION_ENDED") body = <Welcome act={act} busy={busy} ended={flow === "SESSION_ENDED"} />;
-  else if (flow === "DEVICE_SETUP") body = <DeviceSetup t={t} act={act} busy={busy} />;
-  else if (flow === "EYE_CALIBRATION" || flow === "EYE_VALIDATION" || flow === "JAW_CALIBRATION") body = <EyeCalibration act={act} />;
+  else if (flow === "IDLE" || flow === "SESSION_ENDED") body = <Start t={t} act={act} busy={busy} />;
+  else if (flow === "DEVICE_SETUP" || flow === "JAW_CALIBRATION" || flow === "EYE_CALIBRATION" || flow === "EYE_VALIDATION") body = <JawCalibration t={t} act={act} />;
   else if (flow === "ERROR") body = <ErrorScreen t={t} act={act} />;
   else body = <DriveView telemetry={t} live={live} stageRef={stage} act={act} />;
 
   return (
     <div className="app">
-      <TopBar t={t} onFullscreen={fullscreen} />
+      <TopBar onFullscreen={fullscreen} />
       <div className="main">{body}</div>
       {t && !t.you_control && (
         <div className="watching chip warn" role="status">

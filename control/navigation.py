@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from shared.protocol import MAX_SPEED
+from shared.protocol import MAX_SPEED, TURN_SPEED
 
 ARRIVE_M = 0.7  # stop this far from the object (the ultrasonic stop at 0.5 m is the hard backstop)
 MAX_RANGE_M = 4.0  # HC-SR04 readings beyond this are unreliable: ignored
@@ -162,10 +162,21 @@ def _snap_wheel(speed: float) -> float:
 
 def to_wheels(v: float, w: float, cfg: NavConfig = NavConfig()) -> tuple[int, int]:
     """(m/s, rad/s) -> (left, right) firmware speeds. Differential drive: the outer wheel runs faster.
-    Scaled so the fastest wheel the planner can ask for equals MAX_SPEED; the conversion is VERIFY on the chair.
+    Straight at full planner speed = MAX_SPEED; turning in place = TURN_SPEED; the conversion is VERIFY on the chair.
     Each wheel comes out as 0 or at least WHEEL_DEAD_BAND (see _out_of_dead_band); the top speed is unchanged."""
     half = cfg.track_width / 2
-    top = cfg.max_speed + cfg.max_yaw_rate * half
-    left, right = _out_of_dead_band((v - w * half) / top * MAX_SPEED, (v + w * half) / top * MAX_SPEED)
+    spin_wheel = abs(w) * half / cfg.max_speed * MAX_SPEED  # what each wheel would get from this turn rate
+    if v == 0.0 and spin_wheel >= 0.5:  # would round to a moving wheel: a real turn
+        # Turning in place (the route follower's "face the route first" step): spin at TURN_SPEED, left wheel
+        # back and right wheel forward for a LEFT turn (w > 0 = counter-clockwise), and the reverse for right.
+        # Only a real turn: a rounding crumb (w ~ 1e-15) must never spin the chair (it falls through to (0, 0)).
+        return (-TURN_SPEED, TURN_SPEED) if w > 0 else (TURN_SPEED, -TURN_SPEED)
+    # Straight at the planner's top speed = MAX_SPEED (450). In a curve the outer wheel would go faster, so both
+    # wheels are scaled down together until the faster one is at MAX_SPEED: the curve keeps its shape.
+    left, right = (v - w * half) / cfg.max_speed * MAX_SPEED, (v + w * half) / cfg.max_speed * MAX_SPEED
+    fastest = max(abs(left), abs(right))
+    if fastest > MAX_SPEED:
+        left, right = left * MAX_SPEED / fastest, right * MAX_SPEED / fastest
+    left, right = _out_of_dead_band(left, right)
     clamp = lambda s: int(max(-MAX_SPEED, min(MAX_SPEED, round(s))))  # noqa: E731
     return clamp(left), clamp(right)

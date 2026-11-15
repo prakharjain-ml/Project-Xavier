@@ -45,6 +45,11 @@ export interface Telemetry {
   obstacles_m: [number, number][];
   motor: { left: number; right: number; stop: boolean; port: string } | null;
   devices: Record<string, Device>;
+  jaw: { prompt: string | null; level: number | null };
+  drive_mode: "auto" | "manual";
+  arrow: "FWD" | "BACK" | "LEFT" | "RIGHT" | null;
+  arrow_regions: Record<string, [number, number, number, number]>;
+  ready?: { phone_camera?: boolean; headset_wifi?: boolean; eye_calibration?: boolean; chair?: boolean };
   events: UiEvent[];
   diag: { tick_ms: number; note: string; encode_ms?: number };
 }

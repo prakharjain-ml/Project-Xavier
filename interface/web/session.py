@@ -69,6 +69,9 @@ class Drive:
     planned_for: int | None = None
     held: bool = False
     pending_confirm: bool = False
+    arrow: object = None  # manual mode: the arrow the gaze is on (shared.protocol.Target) or None
+    named: bool = False   # the confirm announcement already named the destination ("Driving to the chair")
+    route_said: str | None = None  # last route state announced, so each is said once per destination
     wheels: tuple[int, int] = (0, 0)
     note: str = ""
     gaze_point: tuple[float, float] | None = None   # viewport fraction (for drawing)
@@ -116,9 +119,36 @@ def mock_driver() -> RecordingDriver:
     return driver
 
 
+def real_jaw():
+    """The OpenBCI Cyton over its Wi-Fi shield, channels 1 and 2 (the same board and channels as demo.sh jaw)."""
+    from bci.jaw_live import JawConfirmSource
+
+    return JawConfirmSource("wifi", channels=(1, 2))
+
+
+def hardware_problem() -> str | None:
+    """Why a session cannot start: the phone camera or the headset is missing (read-only checks, no port opened)."""
+    from interface.launcher_modes import headset_ready, room_camera_ready
+
+    if not room_camera_ready():
+        return "Phone camera not connected. Plug in the Pixel (USB webcam), then start again."
+    if not headset_ready():
+        return "Headset not connected. Join the OpenBCI-xxxx Wi-Fi and close the OpenBCI GUI, then start again."
+    return None
+
+
 class Session:
-    def __init__(self, perception_factory, driver_factory=mock_driver, clock=time.monotonic) -> None:
+    def __init__(self, perception_factory, driver_factory=mock_driver, clock=time.monotonic,
+                 jaw_factory=real_jaw, check_hardware=hardware_problem, voice=None) -> None:
         self._make_perception, self._make_driver, self._clock = perception_factory, driver_factory, clock
+        self._make_jaw, self._check_hardware = jaw_factory, check_hardware
+        if voice is None:
+            from interface.web.voice import Voice
+
+            voice = Voice()
+        self.voice = voice  # spoken announcements of what the chair will do (information only)
+        self.jaw_prompt: str | None = None
+        self.drive_mode = "auto"  # auto = path finding to a confirmed object; manual = gaze arrows
         self._lock = threading.RLock()
         self.flow = Flow.IDLE
         self.session_id: str | None = None
@@ -182,9 +212,6 @@ class Session:
             if client is None:
                 return
             client.last_beat = now
-            is_controller = self.controller is not None and self.controller.id == client_id
-            if is_controller and self.perception is not None and self.mode == "mock":
-                self.perception.set_pointer(pointer, now)  # practice: the pointer is the gaze
 
     def take_control(self, client_id: str) -> None:
         with self._lock:
@@ -221,21 +248,53 @@ class Session:
             return {"ok": True, "session": self.session_id}
 
     def _do_start_session(self, a: dict) -> None:
+        """Phone camera + headset required (no simulated inputs). Confirm = jaw clench. Then the jaw calibration
+        runs on its own thread while the page shows its prompts."""
         if self.flow not in (Flow.IDLE, Flow.SESSION_ENDED):
             raise ActionError("A session is already running")
-        mode, confirm = a.get("mode", "mock"), a.get("confirm", "dwell")
-        if confirm not in CONFIRM_MODES:
-            raise ActionError(f"Unknown confirm mode {confirm}")
-        perception = self._make_perception(mode, a)  # may raise ActionError (e.g. live without cameras)
+        problem = self._check_hardware()
+        if problem is not None:
+            raise ActionError(problem)
+        perception = self._make_perception("live", a)  # may raise ActionError (cameras, calibration)
+        try:
+            jaw = self._make_jaw()  # connects to the board: raises if it does not answer
+        except Exception as error:
+            raise ActionError(f"Headset did not answer ({error}). Switch the Cyton off and on, rejoin its "
+                              "Wi-Fi, then start again.") from error
         self._go(Flow.DEVICE_SETUP)
-        self.session_id, self.mode, self.confirm = uuid.uuid4().hex[:12], mode, confirm
+        self.session_id, self.mode, self.confirm = uuid.uuid4().hex[:12], "live", "jaw"
         self.drive, self.error, self.estop_reason, self.arrived_at = _fresh_drive(), None, None, None
-        self.calibrated = mode == "mock"  # practice: the mouse needs no eye calibration
-        self.perception = perception
+        self.calibrated = True  # the saved eye calibration (make_perception refuses to start without one)
+        self.perception, self.jaw = perception, jaw
         self.driver = self._make_driver()
         self.driver.start()  # streams STOP lines from now on
         self.perception.start()
-        self._event(f"Session started ({'practice' if mode == 'mock' else 'live'}, confirm by {confirm})")
+        self._go(Flow.JAW_CALIBRATION)
+        threading.Thread(target=self._calibrate_jaw, args=(self.session_id, jaw), name="jaw-calibration",
+                         daemon=True).start()
+        self._event("Session started")
+
+    def _calibrate_jaw(self, session_id: str, jaw) -> None:
+        """bci.jaw_live.JawConfirmSource.calibrate, unchanged: relax, 3 clenches, threshold. Its prompts go to the
+        page. A result for a session that has since ended or been replaced is ignored."""
+        def show(text: str) -> None:
+            self.jaw_prompt = text
+
+        try:
+            jaw.calibrate(show)
+        except Exception as error:  # ValueError = contact too poor; anything else = board trouble
+            with self._lock:
+                if self.session_id == session_id and self.flow == Flow.JAW_CALIBRATION:
+                    self._fail(f"Jaw calibration failed: {error}")
+            return
+        with self._lock:
+            if self.session_id != session_id or self.flow != Flow.JAW_CALIBRATION:
+                return  # cancelled or a newer session: never resurrect it
+            jaw.start()
+            self.jaw_prompt = None
+            self._go(Flow.READY)
+            self._go(Flow.SELECTING)
+            self._event("Ready: look at a destination, then clench")
 
     def _do_continue(self, a: dict) -> None:
         """Next setup step: eye calibration if needed, then ready to choose."""
@@ -261,6 +320,21 @@ class Session:
         if self.flow in (Flow.NAVIGATING, Flow.ARRIVED):
             self._go(Flow.SELECTING)
         self._event("Destination cancelled")
+
+    def _do_set_drive_mode(self, a: dict) -> None:
+        """Switch between automatic (path finding) and manual (gaze arrows). Always stops and clears first."""
+        mode = a.get("drive_mode")
+        if mode not in ("auto", "manual"):
+            raise ActionError("Drive mode must be auto or manual")
+        if self.flow not in (Flow.SELECTING, Flow.NAVIGATING, Flow.READY):
+            raise ActionError("Switch modes while driving or choosing")
+        self._clear_destination()
+        self._halt()
+        self.drive.arrow = None
+        if self.flow == Flow.NAVIGATING:
+            self._go(Flow.SELECTING)
+        self.drive_mode = mode
+        self._event("Manual control: look at an arrow" if mode == "manual" else "Automatic: look at a destination, then clench")
 
     def _do_choose_again(self, a: dict) -> None:
         self._go(Flow.SELECTING)
@@ -302,6 +376,7 @@ class Session:
         self.estop_reason = reason
         if self.flow not in (Flow.PAUSED, Flow.IDLE, Flow.SESSION_ENDED, Flow.ERROR):
             self._go(Flow.PAUSED)
+            self.voice.announce("estop" if reason == "Emergency stop" else "stop")
         self._event(f"Stopped: {reason}", "warn")
 
     def _fail(self, message: str) -> None:
@@ -344,6 +419,8 @@ class Session:
         if self.perception is None or self.driver is None:
             return
         problem = self.perception.problem()
+        if problem is None and self.jaw is not None and hasattr(self.jaw, "alive") and not self.jaw.alive():
+            problem = f"Headset connection lost ({getattr(self.jaw, 'error', '')}). Reconnect and start again."
         if problem is not None and self.flow != Flow.ERROR:
             self._fail(problem)
             return
@@ -389,32 +466,23 @@ class Session:
 
     def _select_and_drive(self, now: float) -> None:
         from control.follow import follow_step
-        from vision.object_select import (CANCEL_BLINKS, clear_destination, count_blinks, double_blink,
-                                          drive_tick, hit_boxes, nearest_target, update_selection)
+        from vision.object_select import drive_tick, hit_boxes, nearest_target, update_selection
 
         d = self.drive
         if d.frame_t is None:
             self._halt()
             return
-        sample, frame_point = self._gaze_frame_point(now)
-        blinked = tripled = False
-        if sample is not None and sample is not d.last_sample:
-            d.last_sample = sample
-            if self.confirm == "blink":
-                d.blink, blinked = double_blink(d.blink, sample.closed, sample.t)
-            d.series, count = count_blinks(d.series, sample.closed, sample.t)
-            tripled = count >= CANCEL_BLINKS
+        _, frame_point = self._gaze_frame_point(now)
+        if self.drive_mode == "manual":
+            self._manual(frame_point, now)
+            return
         boxes = hit_boxes(d.targets, *d.frame_size)
         locked = d.sel.confirmed is not None
-        if locked and tripled:
-            self._event("Triple blink: destination cancelled")
-            d.sel, locked = clear_destination(d.sel), False
-            self._go(Flow.SELECTING)
         if locked:
             d.hit = d.sel.confirmed if any(t.id == d.sel.confirmed for t in d.targets) else None
         else:
             d.hit = nearest_target(frame_point, boxes, d.hit) if frame_point is not None else None
-        confirm = (d.pending_confirm or blinked or self._jaw_fired()) and not locked
+        confirm = (d.pending_confirm or self._jaw_fired()) and not locked  # a jaw clench confirms
         d.pending_confirm = False
         before = d.sel.confirmed
         if not locked:
@@ -425,8 +493,12 @@ class Session:
             chosen = next(t for t in d.targets if t.id == d.sel.confirmed)
             self._go(Flow.NAVIGATING)
             self._event(f"Destination: {chosen.label}", "success")
+            d.named = self.voice.destination(chosen.label)
+            d.route_said = None
         self.perception.worker.set_destination(d.sel.confirmed)
         target = next((t for t in d.targets if t.id == d.sel.confirmed), None)
+        if target is not None:
+            self._announce_route(target, now)
         if target is not None and d.route_m is not None and follow_step(d.route_m)[1]:
             self._arrive(target.label)
             return
@@ -437,12 +509,52 @@ class Session:
         last = self.driver.last
         d.wheels = (0, 0) if last.stop else (last.left, last.right)
 
+    def _announce_route(self, target, now: float) -> None:
+        """Say each route state once per destination: planning (if it takes a moment), driving, or no route."""
+        d = self.drive
+        if d.route_m is not None:
+            state = "driving"
+        elif d.planned_for == d.sel.confirmed:
+            state = "no_route"  # the planner answered for this destination and found nothing
+        elif d.sel.since is not None and now - d.sel.since > 1.0:
+            state = "planning"
+        else:
+            return
+        if state == d.route_said:
+            return
+        d.route_said = state
+        if state == "driving" and d.named:
+            return  # "Driving to the chair" was already said on confirm
+        self.voice.announce(state)
+
+    def _manual(self, frame_point, now: float) -> None:
+        """Manual mode, exactly as object_select's manual arrows: looking at an arrow drives that way at once
+        (vision.object_select.manual_tick); looking anywhere else stops."""
+        from control.state_machine import ControllerState
+        from vision.manual_arrows import arrow_at
+        from vision.object_select import manual_tick
+
+        d = self.drive
+        self._jaw_fired()  # drain clenches: in manual mode a clench chooses nothing
+        arrow = arrow_at(frame_point)
+        if arrow is not None and arrow != d.arrow:
+            self.voice.announce(f"manual_{arrow.value}")  # say it once, when the direction starts
+        d.arrow = arrow
+        if d.arrow is not None:
+            d.ctrl, d.note = manual_tick(d.arrow, self.driver, d.ctrl, now)
+        else:
+            self._halt()
+            d.ctrl, d.note = ControllerState(), ""
+        last = self.driver.last
+        d.wheels = (0, 0) if last.stop else (last.left, last.right)
+
     def _arrive(self, label: str) -> None:
         self._clear_destination()
         self._halt()
         self.arrived_at = label
         self._go(Flow.ARRIVED)
         self._event(f"Arrived at {label}", "success")
+        self.voice.announce("arrived")
 
     def _jaw_fired(self) -> bool:
         return self.confirm == "jaw" and self.jaw is not None and self.jaw.take()

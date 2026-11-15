@@ -6,6 +6,8 @@ import math
 import numpy as np
 import pytest
 
+from shared.protocol import TURN_SPEED
+
 
 from control.navigation import (
     ARRIVE_M,
@@ -114,10 +116,16 @@ def planner_speed_sweep():
 
 
 def old_wheels(v, w):
-    """The conversion before the dead-band fix, unrounded (for comparison)."""
+    """The conversion before the dead-band fix, unrounded (for comparison). Since Sun Nov 15: straight at the
+    planner's top speed = MAX_SPEED, curves scaled down together to stay under it, turning in place = TURN_SPEED."""
     half = CFG.track_width / 2
-    top = CFG.max_speed + CFG.max_yaw_rate * half
-    return (v - w * half) / top * MAX_SPEED, (v + w * half) / top * MAX_SPEED
+    if v == 0.0 and abs(w) * half / CFG.max_speed * MAX_SPEED >= 0.5:
+        return (-TURN_SPEED, TURN_SPEED) if w > 0 else (TURN_SPEED, -TURN_SPEED)
+    left, right = (v - w * half) / CFG.max_speed * MAX_SPEED, (v + w * half) / CFG.max_speed * MAX_SPEED
+    fastest = max(abs(left), abs(right))
+    if fastest > MAX_SPEED:
+        left, right = left * MAX_SPEED / fastest, right * MAX_SPEED / fastest
+    return left, right
 
 
 def test_no_wheel_command_is_ever_inside_the_dead_band_across_the_planner_range():
@@ -132,13 +140,14 @@ def test_any_motion_the_planner_intends_reaches_at_least_one_wheel():
 
 
 def test_turn_in_place_is_lifted_to_the_slowest_spin_the_board_acts_on():
-    assert to_wheels(0.0, CFG.max_yaw_rate, CFG) == (-WHEEL_DEAD_BAND, WHEEL_DEAD_BAND)  # was (-49, 49)
-    assert to_wheels(0.0, -math.radians(6.0), CFG) == (WHEEL_DEAD_BAND, -WHEEL_DEAD_BAND)  # was (7, -7)
+    # Since Sun Nov 15 a turn in place spins at TURN_SPEED (one wheel back, one forward): left = left wheel back.
+    assert to_wheels(0.0, CFG.max_yaw_rate, CFG) == (-TURN_SPEED, TURN_SPEED)
+    assert to_wheels(0.0, -math.radians(6.0), CFG) == (TURN_SPEED, -TURN_SPEED)
 
 
 def test_slow_forward_is_lifted_to_the_slowest_speed_the_board_acts_on():
     assert to_wheels(0.02, 0.0, CFG) == (WHEEL_DEAD_BAND, WHEEL_DEAD_BAND)  # was (5, 5)
-    assert to_wheels(0.19, 0.0, CFG) == (WHEEL_DEAD_BAND, WHEEL_DEAD_BAND)  # was (48, 48)
+    assert to_wheels(0.10, 0.0, CFG) == (WHEEL_DEAD_BAND, WHEEL_DEAD_BAND)  # 37.5 -> lifted to 50
 
 
 def test_stop_stays_stop():
@@ -147,7 +156,7 @@ def test_stop_stays_stop():
 
 
 def test_dead_band_fix_does_not_raise_the_top_speed_or_touch_faster_commands():
-    assert to_wheels(CFG.max_speed, 0.0, CFG) == (101, 101)
+    assert to_wheels(CFG.max_speed, 0.0, CFG) == (MAX_SPEED, MAX_SPEED)  # full planner speed = the cap
     for v, w in planner_speed_sweep():
         old, new = old_wheels(v, w), to_wheels(v, w, CFG)
         assert max(abs(s) for s in new) <= max(WHEEL_DEAD_BAND, round(max(abs(s) for s in old))), (v, w)
@@ -184,8 +193,8 @@ def test_slower_wheel_of_a_turn_moves_to_the_nearer_of_stop_and_dead_band():
     slow_forward, slow_backward = to_wheels(0.12, 0.4, CFG), to_wheels(0.10, 0.4, CFG)
 
     # Assert: it stays stopped instead of jumping between +50 and -50; a wheel nearer the dead band is lifted
-    assert slow_forward == (0, 58) and slow_backward == (0, 53)
-    assert to_wheels(0.3, 0.6, CFG) == (WHEEL_DEAD_BAND, 118)  # was (34, 118)
+    assert slow_forward == (0, 86) and slow_backward == (0, 79)
+    assert to_wheels(0.3, 0.6, CFG) == (WHEEL_DEAD_BAND, MAX_SPEED)  # outer wheel at the cap, inner lifted to 50
     for v, w in planner_speed_sweep():
         old, new = old_wheels(v, w), to_wheels(v, w, CFG)
         if max(abs(s) for s in old) >= WHEEL_DEAD_BAND:  # pair not rescaled: no wheel moved by more than half

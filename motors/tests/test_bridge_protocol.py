@@ -3,7 +3,7 @@
 import pytest
 
 from motors.bridge_protocol import BridgeStatus, encode_command, parse_status
-from shared.protocol import MAX_SPEED, MotorCommand
+from shared.protocol import WHEEL_LIMIT, MAX_SPEED, MotorCommand
 
 
 def test_drive_command_line():
@@ -19,7 +19,7 @@ def test_zero_speeds_send_explicit_stop():
 
 
 def test_speeds_are_clamped_again():
-    assert encode_command(MotorCommand(5000, -5000, False, 0.0), seq=1) == f"C,1,{MAX_SPEED},{-MAX_SPEED}\n"
+    assert encode_command(MotorCommand(5000, -5000, False, 0.0), seq=1) == f"C,1,{WHEEL_LIMIT},{-WHEEL_LIMIT}\n"
 
 
 @pytest.mark.parametrize("line, expected", [

@@ -473,6 +473,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     planned_for = None  # the destination the worker's newest result was planned for
     memory = DestinationMemory()  # the confirmed object as last seen, for short detection dropouts
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
+    # After S (stop) or X (cancel), NOTHING moves until a new object is confirmed: the rider looks down at the
+    # keyboard to press S, which used to land the gaze on the back arrow and drive the chair 0.13 s after the stop
+    # (live test Sun Nov 15). The manual arrows are ignored while this is set.
+    halted = False
     blink_state = BlinkConfirm()
     series = BlinkSeries()
     last_plan_log = -math.inf
@@ -539,7 +543,9 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                 offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
                 log.info("re-centred: offset %.3f, %.3f", *offset)
             if key == ord("x"):
-                sel = clear_destination(sel)
+                sel, halted = clear_destination(sel), True
+            if key == stop_key(confirm_mode):
+                halted = True  # the stop sticks: no arrow driving until a new confirm
             gaze_filter, point = one_euro(gaze_filter, corrected_point(sample, offset, now), now)  # steadied gaze
             view_point = to_view_point(point)  # ... and of the camera picture (None when looking at a bar)
             boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
@@ -555,7 +561,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             else:
                 hit = nearest_target(view_point, boxes, hit) if view_point is not None else None
             # Manual arrows: only while no destination is locked. Looking at one drives at once (no confirm).
-            arrow = arrow_at(view_point) if driver is not None and not locked else None
+            arrow = arrow_at(view_point) if driver is not None and not locked and not halted else None
             if arrow is not None:
                 hit = None  # an arrow, not an object: nothing to highlight or confirm
             before = sel.confirmed
@@ -570,6 +576,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             problem = gaze_problem(sample, now)
             problems[problem] = problems.get(problem, 0) + 1
             if sel.confirmed is not None and sel.confirmed != before:
+                halted = False  # a new deliberate confirm releases the stop
                 chosen = next(t for t in targets if t.id == sel.confirmed)
                 dist = "?" if chosen.distance_m is None else f"~{chosen.distance_m:.1f} m"
                 how = {"dwell": "dwell", "key": "SPACE key", "jaw": "jaw clench", "blink": "double blink"}[confirm_mode]

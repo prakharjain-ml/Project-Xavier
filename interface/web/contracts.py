@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ActionType = Literal["start_session", "continue", "confirm", "cancel_destination", "choose_again", "estop",
+ActionType = Literal["start_session", "continue", "confirm", "set_drive_mode", "cancel_destination", "choose_again", "estop",
                      "rearm", "recenter", "layout", "end_session",
                      "begin_eye_calibration", "target_shown", "cancel_calibration",
                      "begin_jaw_calibration", "cancel_jaw_calibration"]
@@ -38,6 +38,7 @@ class Action(BaseModel):
     layout: LayoutIn | None = None
     run: int | None = Field(default=None, ge=0)        # calibration run id
     target: int | None = Field(default=None, ge=0)     # calibration target index
+    drive_mode: Literal["auto", "manual"] | None = None
 
     @model_validator(mode="after")
     def _required_fields(self) -> "Action":

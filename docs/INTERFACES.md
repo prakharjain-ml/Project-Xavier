@@ -34,8 +34,9 @@ After that, change this file first, then regenerate. Everything marked VERIFY ne
 | `BRIDGE_WATCHDOG_MS` | 200 | ESP32 commands zero if no laptop line arrives within this |
 | `BANDPASS_HZ` | (5, 40) | must clear 2 x 15 Hz = 30 Hz |
 | `ALPHA_BAND_HZ` | (8, 13) | eyes-closed detector band (`bci/alpha.py`) |
-| `MAX_SPEED` | 300 | firmware units (out of +-1000); raised from 150 on Sun Nov 15 at Prakhar's request |
-| `TURN_SPEED` | 120 | kickoff default in-place turn speed in firmware units; VERIFY in Phase 4 |
+| `MAX_SPEED` | 350 | forward / backward wheel speed, firmware units (out of +-1000); 350 since Sun Nov 15 (450 felt too fast in the live test) |
+| `TURN_SPEED` | 700 | spin in place: one wheel back, one forward, both at this speed (Sun Nov 15, live test) |
+| `WHEEL_LIMIT` | 700 | per-wheel safety clamp = max(`MAX_SPEED`, `TURN_SPEED`); chair.py and bridge.ino (910) cap again |
 | `OBSTACLE_STOP_CM` | 50 | kickoff default ultrasonic threshold in cm; VERIFY in Phase 4 |
 
 ## Messages
@@ -56,12 +57,12 @@ After that, change this file first, then regenerate. Everything marked VERIFY ne
 ### MotorCommand (control -> motors)
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `left` | int | wheel speed, clamped to +-MAX_SPEED |
+| `left` | int | wheel speed, clamped to +-WHEEL_LIMIT |
 | `right` | int | wheel speed, clamped |
 | `stop` | bool | True means both zero, overrides left/right |
 | `t` | float | monotonic time |
 
-Target mapping (provisional): FWD -> (`MAX_SPEED`, `MAX_SPEED`); BACK -> (`-MAX_SPEED // 2`, `-MAX_SPEED // 2`); LEFT -> (`-TURN_SPEED`, `TURN_SPEED`); RIGHT -> (`TURN_SPEED`, `-TURN_SPEED`).
+Target mapping (provisional): FWD -> (`MAX_SPEED`, `MAX_SPEED`); BACK -> (`-MAX_SPEED`, `-MAX_SPEED`); LEFT -> (`-TURN_SPEED`, `TURN_SPEED`); RIGHT -> (`TURN_SPEED`, `-TURN_SPEED`).
 If the firmware takes speed/steer instead of left/right: speed = (left + right) / 2, steer = (right - left) / 2.
 
 ### ControlStatus (control -> interface)
@@ -105,7 +106,7 @@ Bridge rules (enforced on the ESP32, not trusted to the laptop):
 - No valid laptop line for `BRIDGE_WATCHDOG_MS` means speed zero until lines resume.
 - Valid distance (`> 0` and `< OBSTACLE_STOP_CM`) while net forward speed `(left + right) > 0` means speed zero. In-place turns (`(-w, +w)` where `left + right == 0`) and reverse (`(left + right) < 0`) remain allowed so the rider is never trapped facing an obstacle.
 - Use a short echo timeout (~20 ms, ~340 cm max) on HC-SR04 so `pulseIn` never stalls the 200 ms watchdog loop, and map echo timeout (`0` us) to `distance_cm = -1` (clear/out-of-range), never `0 cm`.
-- Speeds are clamped again to `MAX_SPEED`. Malformed lines set speed to zero immediately.
+- Speeds are clamped again to `WHEEL_LIMIT`. Malformed lines set speed to zero immediately.
 
 ## ESP32 to hoverboard firmware (UART) - verified against Keshav's flashed firmware, Sat Nov 14
 Battery: **7S Li-ion (~28 V)**, not the 36 V assumed in the plan (`BAT_CELLS=7`). The link to each board is its

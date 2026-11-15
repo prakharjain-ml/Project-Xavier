@@ -55,8 +55,9 @@ CONTROL_HZ = 20
 BRIDGE_WATCHDOG_MS = 200
 BANDPASS_HZ = (5, 40)
 ALPHA_BAND_HZ = (8, 13)
-MAX_SPEED = 300
-TURN_SPEED = 120
+MAX_SPEED = 350   # forward / backward wheel speed (450 felt too fast in the live test, Sun Nov 15)
+TURN_SPEED = 700  # spin in place: one wheel back, one forward, both at this speed
+WHEEL_LIMIT = max(MAX_SPEED, TURN_SPEED)  # per-wheel safety clamp (chair.py caps again, bridge.ino at 910)
 OBSTACLE_STOP_CM = 50
 
 # ---------------------------------------------------------------- flicker math (shared by interface/ and vision/)

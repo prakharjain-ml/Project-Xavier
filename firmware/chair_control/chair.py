@@ -45,6 +45,10 @@ import serial  # pip install pyserial
 # Tunables
 # ---------------------------------------------------------------------------------------------------------------
 DEFAULT_PORT = "COM4"        # Windows: Device Manager -> Ports. macOS/Linux: /dev/cu.usbmodem... or /dev/ttyACM0
+# The two wheels are wired to the opposite bridge channels from what this library assumed: in the live test (Sun Nov 15)
+# forward and backward were right, but turn_left spun the chair to the RIGHT. Equal speeds hide a swap; opposite speeds
+# show it. True = swap left/right in drive(), so turn_left really is left wheel back + right wheel forward.
+SWAP_SIDES = True
 DEFAULT_MAX_SPEED = 850      # 85 % power. The motors handle full power fine; this cap is for the rider's safety.
 DEFAULT_ACCEL = 60           # max speed change per 50 ms tick when speeding up -> 0..850 in about 0.7 s
 SEND_INTERVAL_S = 0.05       # 20 commands/s. Must stay well below the bridge watchdog (200 ms).
@@ -121,6 +125,8 @@ class Chair:
         Equal values = straight, different values = curve, opposite values = spin in place.
         With seconds: blocks for that long (ramp-up time included), then stops. Ctrl+C also stops.
         """
+        if SWAP_SIDES:
+            left, right = right, left  # wheels are on the opposite bridge channels (see SWAP_SIDES)
         with self._lock:
             self._target = [self._clamp(left), self._clamp(right)]
             self._step_toward_target()          # apply the first ramp step right away (no 50 ms lag)

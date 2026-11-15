@@ -6,7 +6,7 @@ import pytest
 
 from motors.driver import SLEW_STEP, MotorDriver, looks_like_openbci_dongle
 from motors.mock_serial import MockSerial
-from shared.protocol import CONTROL_HZ, MAX_SPEED, MotorCommand
+from shared.protocol import WHEEL_LIMIT, CONTROL_HZ, MAX_SPEED, MotorCommand
 
 
 def started(*ports, **kwargs):
@@ -79,7 +79,7 @@ def ramp(top, step=SLEW_STEP):
 def test_slew_step_reaches_full_speed_in_about_two_seconds_at_the_send_rate():
     """About 1 s at the old cap of 150; the cap is 300 since Sun Nov 15 (mock path only: the real chair uses chair.py)."""
     lines_to_full_speed = len(ramp(MAX_SPEED))
-    assert 1.6 <= lines_to_full_speed / CONTROL_HZ <= 2.2
+    assert 1.8 <= lines_to_full_speed / CONTROL_HZ <= 3.2  # 350 cap at 8 per line = 2.2 s (Sun Nov 15)
 
 
 def test_drive_command_ramps_up_one_step_per_line_until_it_reaches_the_target():
@@ -229,11 +229,11 @@ def test_one_wheel_reversing_goes_through_zero_while_the_other_keeps_its_speed()
 
 
 def test_speed_beyond_the_cap_ramps_to_the_cap_and_no_further():
-    port = ScriptedPort({0: (400, -400)})
+    port = ScriptedPort({0: (5000, -5000)})  # far beyond WHEEL_LIMIT (700)
     driver = scripted(port)
-    lines = lines_after(port, 1 + len(ramp(MAX_SPEED)) + 3)
+    lines = lines_after(port, 1 + len(ramp(WHEEL_LIMIT)) + 3)
     driver.stop()
-    assert speeds(lines[1:]) == [(v, -v) for v in ramp(MAX_SPEED)] + [(MAX_SPEED, -MAX_SPEED)] * 3
+    assert speeds(lines[1:]) == [(v, -v) for v in ramp(WHEEL_LIMIT)] + [(WHEEL_LIMIT, -WHEEL_LIMIT)] * 3
 
 
 def test_soft_start_takes_about_a_second_at_the_real_send_rate():

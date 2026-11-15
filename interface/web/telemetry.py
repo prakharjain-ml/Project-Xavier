@@ -56,6 +56,14 @@ def _obstacles(session) -> list[list[float]]:
     return [[round(x, 2), round(y, 2)] for x, y in pts[::2]]
 
 
+def _arrow_regions() -> dict[str, list[float]]:
+    """Manual-mode arrow areas (fractions of the camera picture), from vision.manual_arrows: the page draws the
+    same areas the backend tests the gaze against."""
+    from vision.manual_arrows import ARROW_REGIONS
+
+    return {target.value: list(box) for target, box in ARROW_REGIONS.items()}
+
+
 def snapshot(session, client_id: str, now: float) -> dict:
     d = session.drive
     controller = session.controller is not None and session.controller.id == client_id
@@ -81,6 +89,12 @@ def snapshot(session, client_id: str, now: float) -> dict:
         "motor": None if motor is None else {"left": motor.left, "right": motor.right, "stop": motor.stop,
                                              "port": session.driver.port_label},
         "devices": session.perception.devices() if session.perception is not None else {},
+        "drive_mode": session.drive_mode,
+        "arrow": None if d.arrow is None else d.arrow.value,
+        "arrow_regions": _arrow_regions(),
+        "jaw": {"prompt": session.jaw_prompt,
+                "level": (session.jaw.level() if session.jaw is not None and hasattr(session.jaw, "level")
+                          else None)},
         "events": list(session.events)[-8:],
         "diag": {"tick_ms": round(session.tick_ms, 2), "note": d.note.strip(" |")},
     }

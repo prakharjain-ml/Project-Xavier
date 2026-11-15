@@ -86,6 +86,37 @@ function drawObject(ctx: CanvasRenderingContext2D, o: SceneObject, t: Telemetry,
   ctx.restore();
 }
 
+function drawArrows(ctx: CanvasRenderingContext2D, t: Telemetry, content: Rect): void {
+  // The same areas the backend tests the gaze against (vision/manual_arrows.py ARROW_REGIONS).
+  for (const [name, [x1, y1, x2, y2]] of Object.entries(t.arrow_regions)) {
+    const active = t.arrow === name;
+    const cx = content.x + ((x1 + x2) / 2) * content.w;
+    const cy = content.y + ((y1 + y2) / 2) * content.h;
+    const half = Math.min((x2 - x1) * content.w, (y2 - y1) * content.h) * 0.32;
+    const pts: Record<string, [number, number][]> = {
+      FWD: [[cx, cy - half], [cx - half, cy + half], [cx + half, cy + half]],
+      BACK: [[cx, cy + half], [cx - half, cy - half], [cx + half, cy - half]],
+      LEFT: [[cx - half, cy], [cx + half, cy - half], [cx + half, cy + half]],
+      RIGHT: [[cx + half, cy], [cx - half, cy - half], [cx - half, cy + half]],
+    };
+    ctx.save();
+    ctx.fillStyle = active ? "rgba(34, 211, 238, 0.22)" : "rgba(11, 15, 20, 0.35)";
+    ctx.strokeStyle = active ? CYAN : "rgba(230, 237, 243, 0.25)";
+    ctx.lineWidth = active ? 2 : 1;
+    ctx.beginPath();
+    ctx.roundRect(content.x + x1 * content.w + 6, content.y + y1 * content.h + 6,
+                  (x2 - x1) * content.w - 12, (y2 - y1) * content.h - 12, 18);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = active ? CYAN : "rgba(230, 237, 243, 0.8)";
+    ctx.beginPath();
+    pts[name].forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
 function useOverlay(canvasRef: RefObject<HTMLCanvasElement>, live: MutableRefObject<Telemetry | null>): void {
   useEffect(() => {
     let frame = 0;
@@ -106,16 +137,11 @@ function useOverlay(canvasRef: RefObject<HTMLCanvasElement>, live: MutableRefObj
       ctx.clearRect(0, 0, w, h);
       if (!t.frame) return;
       const content = containRect({ x: 0, y: 0, w, h }, t.frame.w, t.frame.h);
-      const shown = t.objects.some((o) => o.confirmed) ? t.objects.filter((o) => o.confirmed) : t.objects;
-      for (const o of shown) drawObject(ctx, o, t, content);
-      const g = t.gaze.point;
-      if (g && t.mode === "mock") { // practice: show where the "gaze" (mouse) is; live gaze is not drawn (it jitters)
-        const rect = canvas.getBoundingClientRect();
-        ctx.strokeStyle = CYAN;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(g[0] * window.innerWidth - rect.left, g[1] * window.innerHeight - rect.top, 12, 0, Math.PI * 2);
-        ctx.stroke();
+      if (t.drive_mode === "manual") {
+        drawArrows(ctx, t, content);
+      } else {
+        const shown = t.objects.some((o) => o.confirmed) ? t.objects.filter((o) => o.confirmed) : t.objects;
+        for (const o of shown) drawObject(ctx, o, t, content);
       }
     };
     frame = requestAnimationFrame(draw);
@@ -123,51 +149,20 @@ function useOverlay(canvasRef: RefObject<HTMLCanvasElement>, live: MutableRefObj
   }, [canvasRef, live]);
 }
 
-function RouteMap({ t }: { t: Telemetry }) {
-  // Top view in metres: chair at the bottom centre, forward = up. Obstacles = what the planner steers around.
-  const size = 280;
-  const pts = t.route.points_m;
-  const extent = Math.max(2, ...pts.map(([x, y]) => Math.max(x, Math.abs(y) * 2)), ...t.obstacles_m.map(([x]) => x));
-  const scale = (size - 30) / extent;
-  const toXY = ([x, y]: [number, number]): [number, number] => [size / 2 - y * scale, size - 18 - x * scale];
-  const line = [[0, 0] as [number, number], ...pts].map((p) => toXY(p).join(",")).join(" ");
-  return (
-    <svg viewBox={`0 0 ${size} ${size}`} width="100%" role="img" aria-label="Planned route seen from above">
-      <rect x="0" y="0" width={size} height={size} rx="12" fill="#121821" />
-      {t.obstacles_m.map((p, i) => {
-        const [cx, cy] = toXY(p);
-        return <circle key={i} cx={cx} cy={cy} r="3" fill="#5c687a" />;
-      })}
-      {pts.length > 0 && (
-        <polyline points={line} fill="none" stroke={t.route.status === "held" ? "#f59e0b" : "#22d3ee"} strokeWidth="3"
-                  strokeDasharray={t.route.status === "held" ? "6 5" : undefined} strokeLinecap="round" />
-      )}
-      <polygon points={`${size / 2},${size - 26} ${size / 2 - 8},${size - 10} ${size / 2 + 8},${size - 10}`} fill="#e6edf3" />
-    </svg>
-  );
-}
-
-const ROUTE_TEXT: Record<Telemetry["route"]["status"], string> = {
-  none: "No destination yet",
+const ROUTE_TEXT: Record<Telemetry["route"]["status"], string | null> = {
+  none: null,
   planning: "Planning a route…",
-  no_route: "No safe route found from here",
-  ready: "Route ready",
-  held: "Destination out of sight: following the last route",
-};
-
-const HOW: Record<Telemetry["confirm"], string> = {
-  dwell: "Look at it for 1.5 s", key: "Look at it, then press SPACE", jaw: "Look at it, then clench",
-  blink: "Look at it, then blink twice",
+  no_route: "No safe route from here",
+  ready: null,
+  held: "Destination out of sight",
 };
 
 function Overlays({ t, act }: { t: Telemetry; act: DriveProps["act"] }) {
   if (t.flow === "PAUSED") {
     return (
       <div className="overlay-card" role="alertdialog" aria-labelledby="paused-title">
-        <div className="card">
-          <div className="eyebrow">Chair stopped</div>
+        <div className="card center">
           <h2 id="paused-title">{t.stop_reason ?? "Stopped"}</h2>
-          <p className="lead">Nothing moves until you re-arm and choose a destination again.</p>
           <button className="btn warn lg" onClick={() => act("rearm")} autoFocus>Re-arm</button>
         </div>
       </div>
@@ -176,11 +171,9 @@ function Overlays({ t, act }: { t: Telemetry; act: DriveProps["act"] }) {
   if (t.flow === "ARRIVED") {
     return (
       <div className="overlay-card" role="dialog" aria-labelledby="arrived-title">
-        <div className="card">
-          <div className="eyebrow">Arrived</div>
-          <h2 id="arrived-title">{t.arrived_at ?? "Destination reached"}</h2>
-          <p className="lead">The chair has stopped.</p>
-          <button className="btn primary lg" onClick={() => act("choose_again")} autoFocus>Choose another destination</button>
+        <div className="card center">
+          <h2 id="arrived-title">Arrived at {t.arrived_at}</h2>
+          <button className="btn primary lg" onClick={() => act("choose_again")} autoFocus>Choose another</button>
         </div>
       </div>
     );
@@ -188,59 +181,61 @@ function Overlays({ t, act }: { t: Telemetry; act: DriveProps["act"] }) {
   return null;
 }
 
+const ARROW_TEXT: Record<string, string> = { FWD: "Forward", BACK: "Backward", LEFT: "Rotating left", RIGHT: "Rotating right" };
+
+function JawMeter({ level }: { level: number | null }) {
+  // Live muscle level from the headset as a share of this rider's calibrated threshold (1.0 = a clench).
+  const share = level == null ? 0 : Math.min(level, 1.5) / 1.5;
+  const over = level != null && level >= 1;
+  return (
+    <section className="panel jaw" aria-label="Jaw clench level">
+      <div className="jaw-head">
+        <span className="eyebrow">Jaw</span>
+        <span className={over ? "jaw-state on" : "jaw-state"}>{level == null ? "No signal" : over ? "Clench" : "Relaxed"}</span>
+      </div>
+      <div className="jaw-bar">
+        <i style={{ transform: `scaleX(${share})` }} className={over ? "on" : ""} />
+        <b style={{ left: `${(1 / 1.5) * 100}%` }} aria-hidden="true" />
+      </div>
+    </section>
+  );
+}
+
 export function DriveView({ telemetry: t, live, stageRef, act }: DriveProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   useOverlay(canvasRef, live);
   const chosen = t.objects.find((o) => o.confirmed);
-  const keyMode = t.confirm === "key" || t.confirm === "blink";
   const stale = t.frame && t.frame.age_s > 1 ? `Camera picture is ${t.frame.age_s.toFixed(1)} s old` : null;
-  const banner = t.flow === "NAVIGATING" && chosen ? `Driving to ${chosen.label}` :
-    t.flow === "SELECTING" ? (t.gaze.point ? `${HOW[t.confirm]} to choose` : "No gaze: face not seen or eyes closed") : null;
+  const noGaze = t.flow === "SELECTING" && !t.gaze.point ? "No gaze" : null;
+  const route = ROUTE_TEXT[t.route.status];
   return (
     <div className="drive">
       <div className="stage" ref={stageRef}>
-        <img src={VIDEO_URL} alt="Forward camera" />
+        <img src={VIDEO_URL} alt="Room camera" />
         <canvas ref={canvasRef} aria-hidden="true" />
-        {(stale || banner) && <div className={`banner ${stale || !t.gaze.point ? "warn" : ""}`} role="status">{stale ?? banner}</div>}
+        {(stale || noGaze) && <div className="banner warn" role="status">{stale ?? noGaze}</div>}
         <Overlays t={t} act={act} />
       </div>
-      <aside className="side" aria-label="Drive status">
-        <section className="panel" aria-live="polite">
-          <h3>Destination</h3>
-          <div className="dest">{chosen ? chosen.label[0].toUpperCase() + chosen.label.slice(1) : "None"}</div>
-          <div className="muted">{chosen ? (chosen.distance_m != null ? `About ${chosen.distance_m.toFixed(1)} m away (estimate)` : "Distance unknown") : `${HOW[t.confirm]}.`}</div>
-          {chosen && <button className="btn ghost" style={{ marginTop: 12 }} onClick={() => act("cancel_destination")}>Cancel destination</button>}
-        </section>
-        <section className="panel">
-          <h3>Route</h3>
-          <div className={t.route.status === "no_route" || t.route.status === "held" ? "warn-text" : "muted"}>
-            {ROUTE_TEXT[t.route.status]}{t.route.length_m ? ` · ${t.route.length_m.toFixed(1)} m` : ""}
-          </div>
-          <RouteMap t={t} />
-          <div className="note">Floor the camera cannot see is assumed open. The chair's ultrasonic stop is the backstop.</div>
-        </section>
-        <section className="panel">
-          <h3>Keys</h3>
-          <div className="keys">
-            {keyMode && <><span className="kbd">SPACE</span><span>Confirm</span></>}
-            <span className="kbd">{keyMode ? "S" : "SPACE"}</span><span>Emergency stop (or Esc)</span>
-            <span className="kbd">X</span><span>Cancel destination</span>
-            <span className="kbd">C</span><span>Re-centre gaze (look at the middle)</span>
-            <span className="kbd">R</span><span>Re-arm after a stop</span>
-          </div>
-          {keyMode && t.flow === "SELECTING" && <button className="btn primary" style={{ marginTop: 12, width: "100%" }} onClick={() => act("confirm")}>Confirm the highlighted object</button>}
-        </section>
-        <section className="panel">
-          <h3>Activity</h3>
-          <ul className="events">{t.events.slice(-5).reverse().map((e) => <li key={`${e.t}-${e.text}`} className={e.tone}>{e.text}</li>)}</ul>
-        </section>
-        <details className="panel diag">
-          <summary>Diagnostics</summary>
-          <div>frame age {t.frame?.age_s.toFixed(2) ?? "-"} s · gaze age {t.gaze.age_s?.toFixed(2) ?? "-"} s</div>
-          <div>tick {t.diag.tick_ms} ms · jpeg {t.diag.encode_ms ?? "-"} ms</div>
-          <div>motor {t.motor ? (t.motor.stop ? "STOP" : `${t.motor.left}, ${t.motor.right}`) : "-"} ({t.motor?.port})</div>
-          <div>{t.diag.note}</div>
-        </details>
+      <aside className="side" aria-label="Drive">
+        <div className="segmented mode-switch" role="group" aria-label="Drive mode">
+          <button aria-pressed={t.drive_mode === "auto"} onClick={() => act("set_drive_mode", { drive_mode: "auto" })}>Automatic</button>
+          <button aria-pressed={t.drive_mode === "manual"} onClick={() => act("set_drive_mode", { drive_mode: "manual" })}>Manual</button>
+        </div>
+        {t.drive_mode === "auto" ? (
+          <section className="panel dest-panel" aria-live="polite">
+            <div className="eyebrow">{chosen ? "Driving to" : "Destination"}</div>
+            <div className="dest">{chosen ? chosen.label[0].toUpperCase() + chosen.label.slice(1) : "Look, then clench"}</div>
+            {chosen && chosen.distance_m != null && <div className="muted">≈ {chosen.distance_m.toFixed(1)} m</div>}
+            {chosen && route && <div className="warn-text">{route}</div>}
+            {chosen && <button className="btn ghost" onClick={() => act("cancel_destination")}>Cancel</button>}
+          </section>
+        ) : (
+          <section className="panel dest-panel" aria-live="polite">
+            <div className="eyebrow">Manual</div>
+            <div className="dest">{t.arrow ? ARROW_TEXT[t.arrow] : "Look at an arrow"}</div>
+          </section>
+        )}
+        <JawMeter level={t.jaw.level} />
         <button className="stop" onClick={() => act("estop")} aria-label="Emergency stop">STOP</button>
       </aside>
     </div>

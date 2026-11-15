@@ -4,7 +4,7 @@
     python -m interface.web --no-browser  server only (e.g. when using the hosted page at projectxavier.vercel.app)
 
 If Xavier is already running, this just opens the browser on it (no second copy fighting over cameras).
-Motor commands go to a fake serial port. A real chair port is a human-only decision and is not exposed here.
+Motor commands go to a test port unless a human passes --serial PORT (the ESP32), as with demo.sh chair.
 """
 
 from __future__ import annotations
@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Xavier web app (local)")
     parser.add_argument("--no-browser", action="store_true", help="do not open a browser window")
     parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--serial", metavar="PORT", default=None,
+                        help="ESP32 chair port: the REAL wheels move (HUMANS ONLY, wheels up, kill switch in hand)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     os.makedirs(LOG_DIR, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -62,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_browser:
         threading.Thread(target=open_when_ready, args=(url,), daemon=True).start()
     # Loopback only: nothing outside this laptop can reach the server (or the motors behind it).
-    uvicorn.run(create_app(port=args.port), host=HOST, port=args.port, log_level="warning")
+    uvicorn.run(create_app(port=args.port, serial_port=args.serial), host=HOST, port=args.port, log_level="warning")
     return 0
 
 

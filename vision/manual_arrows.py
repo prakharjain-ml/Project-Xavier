@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from shared.protocol import MAX_SPEED, Target
+from shared.protocol import MAX_SPEED, TURN_SPEED, Target
 
 # (x1, y1, x2, y2) as fractions of the camera picture
 ARROW_REGIONS: dict[Target, tuple[float, float, float, float]] = {
@@ -18,9 +18,8 @@ ARROW_REGIONS: dict[Target, tuple[float, float, float, float]] = {
     Target.LEFT: (0.00, 0.30, 0.12, 0.70),
     Target.RIGHT: (0.88, 0.30, 1.00, 0.70),
 }
-TURN_SHARE = 0.5  # spinning in place at full speed is violent; turns use half (as Keshav's keyboard_drive does)
-TURN_SPEED = int(MAX_SPEED * TURN_SHARE)
-# (left, right) wheel speeds; turns spin in place, matching chair.turn_left / chair.turn_right
+# (left, right) wheel speeds: straight at MAX_SPEED (450), turns spin in place at TURN_SPEED (700),
+# matching chair.turn_left (left wheel back, right forward) / chair.turn_right
 ARROW_WHEELS: dict[Target, tuple[int, int]] = {
     Target.FWD: (MAX_SPEED, MAX_SPEED),
     Target.BACK: (-MAX_SPEED, -MAX_SPEED),

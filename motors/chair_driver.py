@@ -23,7 +23,7 @@ log = logging.getLogger("motors.chair_driver")
 
 COMMAND_STALE_S = 0.2  # no new command for this long -> stop (the screen sends one every pass, many per second)
 WATCH_PERIOD_S = 0.05
-SPEED_CAP = 300  # chair.py's own cap for this program (its default is 850); our commands are 150 or less anyway
+SPEED_CAP = 700  # chair.py's own cap for this program (its default is 850): turns spin at 700, straight at 450
 LOG_CHANGE = 15  # log again when either wheel changes by more than this (avoids a line per pass)
 
 

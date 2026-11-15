@@ -35,7 +35,7 @@ FINAL_STOP_LINES = 5  # stop lines sent when the driver shuts down
 # Soft start: the most a wheel's speed may GROW per line sent. Lines go out CONTROL_HZ = 20 times a second and the
 # speed cap is 150, so 8 per line takes 19 lines, about 0.95 s, from standstill to the cap (and 13 lines, 0.65 s,
 # to the planner's top of about 101). Slowing down and stopping are never limited.
-SLEW_STEP = 8
+SLEW_STEP = 8  # Sun Nov 15: with the cap at 450 this is 57 lines, about 2.8 s, from standstill to full forward
 
 # The OpenBCI dongle has an FTDI chip. macOS names an FTDI port after the chip's serial number, which starts
 # with a letter: usbserial-DM00Q7XX, -DN0096XA, -DQ007UBV, -D200PMA1. The usual ESP32 boards have a CP210x or

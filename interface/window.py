@@ -35,10 +35,25 @@ def screen_size() -> tuple[int, int]:
     return FALLBACK_SIZE
 
 
+def bring_to_front() -> None:
+    """Make this program the frontmost app. macOS only completes a window's full-screen switch for the front app,
+    and a program started from a terminal or a background shell is not in front, so its window stayed small (live
+    test, Sun Nov 15). Non-blocking; if macOS refuses, nothing else changes."""
+    import os
+
+    script = f'tell application "System Events" to set frontmost of (first process whose unix id is {os.getpid()}) to true'
+    try:
+        subprocess.Popen(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as error:
+        log.warning("could not bring the window to the front: %s", error)
+
+
 def open_fullscreen(cv2, name: str) -> None:
     """Create `name` as a full-screen window (call once, before the first show())."""
     cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)  # in front: macOS only goes full screen for a front window
     cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    bring_to_front()
 
 
 def fit_to_screen(cv2, image):
@@ -51,6 +66,34 @@ def fit_to_screen(cv2, image):
     return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR)
 
 
+CHECK_EVERY_S = 1.0  # how often show() checks the window really is full screen
+_last_check: dict[str, float] = {}
+
+
+def keep_fullscreen(cv2, name: str) -> None:
+    """macOS only finishes the full-screen switch for a window that is in front. A program started from a
+    terminal or another app (or a window that lost focus) can stay a small normal window even though OpenCV
+    reports "full screen". Every CHECK_EVERY_S: if the picture does not cover the screen, bring the window to the
+    front and ask again."""
+    import time
+
+    now = time.monotonic()
+    if now - _last_check.get(name, 0.0) < CHECK_EVERY_S:
+        return
+    _last_check[name] = now
+    try:
+        x, y, w, h = cv2.getWindowImageRect(name)
+    except cv2.error:
+        return  # window not created yet
+    width, height = screen_size()
+    if w < 0.95 * width or h < 0.95 * height or (x, y) != (0, 0):
+        log.info("window %s is %dx%d at (%d, %d), not full screen: asking again", name, w, h, x, y)
+        bring_to_front()
+        cv2.setWindowProperty(name, cv2.WND_PROP_TOPMOST, 1)
+        cv2.setWindowProperty(name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+
+
 def show(cv2, name: str, image) -> None:
-    """cv2.imshow, but filling the whole screen."""
+    """cv2.imshow, but filling the whole screen (and staying full screen)."""
     cv2.imshow(name, fit_to_screen(cv2, image))
+    keep_fullscreen(cv2, name)

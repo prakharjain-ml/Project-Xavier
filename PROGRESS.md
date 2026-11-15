@@ -40,6 +40,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sun Nov 15, 1:05 AM - Claude Code (Opus 5.5), for Keshav
+- Done: ESP32 now runs over its **COM port** (CH343); the native USB connector was damaged in a drive test (power only, no data). Sketch re-uploaded with `USB CDC On Boot -> Disabled`; `bridge.ino` code unchanged. Added `firmware/test_code/keyboard_drive.py` (arrow-key teleop, Windows only). `chair_control/README.md`: COM-port and macOS setup (port names, CH34x driver, data cable).
+- In progress (file:function, state): none. A WiFi (UDP) fallback was prototyped and reverted (not in the repo).
+- Next step: Try `chair_control` on the demo MacBook (`ls /dev/cu.*`, then `python3 firmware/chair_control/example.py /dev/cu.<name>`). Optional: cross-platform pygame version of `keyboard_drive.py`. Repair the ESP32 USB-C connector when there is time.
+- Known bugs: `DEFAULT_PORT` in `chair.py` is still `COM4`, so pass the port explicitly (`COM5` on Keshav's laptop).
+- Evidence (command + result): `python test_code/keyboard_drive.py 200 COM5` after the re-upload -> both wheels drive on arrow keys (Keshav, wheels up). Before the re-upload: `bridge ?`, no motion.
+
 ### Sat Nov 14, 9:48 PM - Claude Code (Opus 5.5), for Keshav
 - Done: **Both wheels drive from the laptop.** Laptop -> ESP32 -> each board's 5-pin master-slave plug (P2 = PA2 TX,
   P3 = PA3 RX; ESP32 GND to each board's SWD GND hole, because P1 is not a solid ground). Slave unlocked and flashed.

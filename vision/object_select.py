@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import logging
+import math
 import os
 import subprocess
 import sys
@@ -67,6 +68,9 @@ MIN_HIT_SIZE = 0.12  # small objects get a gaze target at least 12% of the scree
 SAME_OBJECT_IOU = 0.3  # a relabelled box overlapping the previous candidate this much is the same object
 MIN_ACCURACY = 0.85  # calibration check must reach this before selecting objects (one retry)
 MIN_LOOK_S = 0.3  # gaze must rest on a box this long before a clench / key confirms it (no sweep-past picks)
+# Look for objects this often. Furniture does not move and the chair is slow, so 7 times a second is plenty,
+# and well inside the 0.5 s limit after which a camera frame counts as stale.
+DETECT_PERIOD_S = 0.15
 STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
@@ -268,6 +272,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     planned_for, route, route_m = None, None, None  # which (frame, destination) the current route was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
+    last_detect = -math.inf  # when detection last ran
+    shown = None  # newest camera picture, for the screen only
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
     targets: list[Track] = []  # the few of them shown as boxes: what the rider can choose
     frame, last_t, confirmations = None, None, []
@@ -286,7 +292,13 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             break
         now = time.monotonic()
         snapshot = reader.latest()
-        if snapshot is not None and snapshot[1] != last_t:  # new camera frame: run YOLO + tracking once
+        # New camera frame: run YOLO + tracking, but at most every DETECT_PERIOD_S. Detection takes about 60 ms,
+        # the rest of a pass about 10 ms; running it on every frame made the gaze cursor trail the eyes.
+        if snapshot is not None:
+            shown = snapshot[0]  # the picture on screen follows the camera every pass; outlines use the last detection
+        replanned = False
+        if snapshot is not None and snapshot[1] != last_t and now - last_detect >= DETECT_PERIOD_S:
+            last_detect, replanned = now, True
             frame, last_t = snapshot
             tracks = detect(model, frame, focal_length_px(frame.shape[1], hfov), device, classes)
             first_seen = {**{t.id: now for t in tracks if t.id not in first_seen}, **first_seen}
@@ -327,7 +339,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
                                                     confirmations, obstacles=tracks, frame_h=frame.shape[0],
                                                     frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
-                                                    follow=follow, route_m=route_m)
+                                                    follow=follow, route_m=route_m, replan=replanned)
         total_frames += 1
         gaze_frames += point is not None
         # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
@@ -335,7 +347,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
             status = drive_note.strip(" |") + "  |  " + status
         mode = "Drive to object" if driver is not None else "Choose a destination"
-        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, view_point, now, status, dwell_s, mode, route))
+        screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
+        cv2.imshow(WINDOW, draw(cv2, screen_frame, targets, boxes, sel, view_point, now, status, dwell_s, mode, route))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")
@@ -345,7 +358,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
 def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
                nav: NavState, now: float, log_lines: list[str], *, obstacles: Sequence[Track], frame_h: int,
                frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False,
-               follow: str = "direct", route_m: np.ndarray | None = None):
+               follow: str = "direct", route_m: np.ndarray | None = None, replan: bool = True):
     """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
     whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it.
 
@@ -357,7 +370,14 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
     wheels, no_route = (0, 0), False
     if target is not None:
         extra = {"frame_h": frame_h} if NAV_STEP_TAKES_FRAME_H else {}
-        nav, wheels, arrived = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm(), **extra)
+        if replan:
+            nav, wheels, arrived = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm(), **extra)
+        else:
+            # Between detections: keep the speeds from the last planner step. The planner limits acceleration per
+            # step assuming one step per camera look (about 0.1 s); stepping it on every faster pass would let it
+            # speed up several times quicker than designed. The state machine below still runs every pass, so
+            # looking away, SPACE and a stale frame stop the chair just as fast as before.
+            wheels, arrived = to_wheels(nav.v, nav.w), False
         if follow == "route" and not arrived:
             # Route mode: nav_step above is kept only for its arrival rule (the object's foot has left the
             # picture). The wheel speeds come from following the planned route. No route this frame (route_m is

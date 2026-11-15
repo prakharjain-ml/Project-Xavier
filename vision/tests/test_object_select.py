@@ -779,3 +779,40 @@ def test_direct_mode_is_still_the_default_and_ignores_routes(monkeypatch):
     s = run_drive_session(monkeypatch, [CHAIR], script)
 
     assert s.is_moving() and calls == []  # drove, and never planned a route
+
+
+def test_between_detections_the_planner_is_not_stepped_but_the_state_machine_still_stops_the_chair(monkeypatch):
+    """Detection now runs about 7 times a second while the loop runs faster. The planner must only step on a new
+    detection (its acceleration limit assumes one step per look), but looking away must still stop at once."""
+    import time
+
+    import vision.object_select as osel
+    from control.goto import NavState
+    from control.state_machine import ControllerState
+    from motors.mock_serial import MockSerial
+
+    calls = []
+    monkeypatch.setattr(osel, "nav_step", lambda *a, **k: calls.append(1) or (NavState(0.3, 0.0), (90, 90), False))
+
+    class Driver:
+        def __init__(self):
+            self.sent = []
+
+        def distance_cm(self):
+            return None
+
+        def send(self, command):
+            self.sent.append(command)
+
+    driver, sel, now = Driver(), Selection(candidate=4, since=0.0, confirmed=4), time.monotonic()
+    common = dict(obstacles=[CHAIR], frame_h=FRAME_H, frame_t=now)
+    _, ctrl, nav, _ = osel.drive_tick(sel, 4, [CHAIR], FRAME_W, 85.5, driver, ControllerState(), NavState(), now, [],
+                                      **common)
+    _, ctrl, nav, _ = osel.drive_tick(sel, 4, [CHAIR], FRAME_W, 85.5, driver, ctrl, nav, now + 0.02, [],
+                                      replan=False, **common)
+    assert calls == [1]  # the second pass reused the speeds instead of stepping the planner again
+    assert nav == NavState(0.3, 0.0)
+    _, ctrl, nav, _ = osel.drive_tick(sel, None, [CHAIR], FRAME_W, 85.5, driver, ctrl, nav, now + 0.04, [],
+                                      replan=False, **common)
+    assert driver.sent[-1].stop  # looked away on a pass without a detection: stop command all the same
+    assert MockSerial is not None

@@ -129,6 +129,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~9:36 PM - Claude Code (Opus 5.5), for Prakhar (gaze screen lag)
+- Prakhar, live: "very laggy". Measured per pass at 1920x1080: detection 60 ms (`yolo11s-seg`), route plan 29 ms, drawing 9 ms. Detection ran on every camera frame, so the eye cursor updated only as fast as YOLO.
+- Fix (`vision/object_select.py`): detection runs at most every 0.15 s (`DETECT_PERIOD_S`); the camera picture and the gaze cursor update every pass. The direct planner steps only on a new detection (its acceleration limit assumes one step per look); the state machine still runs every pass, so looking away, SPACE and a stale frame stop as fast as before.
+- Session result before the fix: gaze available in 92% of frames (8% no sample from the tracker). Gaze quality ("not working very well") not yet diagnosed: offset, jitter or wrong object?
+- Evidence: `python -m pytest -q` -> `577 passed`. Not yet re-checked live.
+- Known flaky: one test failed once under heavy load (other agents running) and passed on an idle machine; not identified.
+
 ### Sat Nov 14, ~9:27 PM - Claude Code (Fable 5.2), for Prakhar (camera roles: biggest face = eye camera)
 - Bug seen live: the gaze screen detected objects on the laptop camera (the rider's own face). The Pixel faced a teammate across the table, and the rule "the camera that sees a face is the eye camera" took the Pixel for the eye camera.
 - Fix (`vision/camera_roles.py`): the eye camera is the one with the widest face in view (the rider sits closest to the laptop camera); the forward camera may see people. Two faces of about the same size are refused with a message instead of guessed. `--eye-camera N --source M` still override.

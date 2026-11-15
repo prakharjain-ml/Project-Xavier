@@ -28,6 +28,8 @@ Files in this folder:
 | `example.py` | First drive test: `python firmware/chair_control/example.py COM4`. |
 | `README.md` | This document. |
 
+Arrow-key driving for testing (Windows only): `python firmware/test_code/keyboard_drive.py 400 COM5`.
+
 ---
 
 ## 1. System overview
@@ -54,14 +56,61 @@ RoboDurden Gen2 firmware, option 5     RoboDurden Gen2 firmware, option 5
 
 ---
 
-## 2. Installation
+## 2. Installation and finding the port
 
 ```bash
-pip install pyserial
+pip install pyserial        # macOS: pip3 install pyserial
 ```
 
-Python 3.8+. No other dependencies. Find the port: Windows Device Manager → Ports (the ESP32-S3 shows as
-"USB Serial Device", usually `COM4` on Keshav's laptop). On macOS it is `/dev/cu.usbmodem…`, on Linux `/dev/ttyACM0`.
+Python 3.8+. No other dependencies. `chair.py` works the same on **Windows, macOS and Linux**; only the port name
+differs. (The arrow-key script `firmware/test_code/keyboard_drive.py` is Windows-only. On a Mac, use the library directly.)
+
+**Which ESP32 port to plug into: the one labeled COM.** The ESP32-S3 board has two USB-C ports:
+
+| Port on the board | Chip | Use it? |
+|---|---|---|
+| **COM** | CH343 USB-serial | **Yes.** Power and data in one cable. |
+| **USB** (native) | ESP32-S3 itself | **No.** On Keshav's board its connector was half torn off (Nov 15): it still powers the board, but carries no data. |
+
+Because of this, `bridge.ino` is uploaded with **Arduino IDE → Tools → USB CDC On Boot → Disabled**, which sends the
+bridge's serial to the COM port. If the native USB port is ever repaired and used again, re-upload with that setting
+**Enabled**. A mismatch makes the library print `no status from the ESP32 bridge`, and the wheels won't move.
+
+### Windows
+Device Manager → **Ports (COM & LPT)** → `USB-Enhanced-SERIAL CH343 (COMx)`. That's `COM5` on Keshav's laptop;
+other laptops give it another number.
+
+```python
+Chair("COM5")
+```
+```bash
+python firmware/chair_control/example.py COM5
+```
+No CH343 entry: install the WCH CH343 driver, then re-plug.
+
+### macOS (for example the demo MacBook)
+1. **Cable:** a USB-C to USB-C **data** cable from the ESP32's **COM** port to the Mac. Cheap charge-only cables
+   show nothing.
+2. **Python package:** `pip3 install pyserial` (in the venv you run from).
+3. **Plug in.** On Apple silicon laptops macOS may ask *"Allow accessory to connect?"*: click **Allow**.
+4. **Find the port:** run `ls /dev/cu.*` once with the ESP32 unplugged and once plugged in. The new entry is the ESP32,
+   usually `/dev/cu.wchusbserial…` or `/dev/cu.usbserial-…` (sometimes `/dev/cu.usbmodem…`).
+   Use the **`/dev/cu.`** name, not `/dev/tty.`.
+5. **No new entry?** Install WCH's CH34x macOS driver (`CH34xVCPDriver`), allow it in System Settings →
+   Privacy & Security, re-plug and check again.
+6. **Drive** (wheels in the air the first time, kill key in reach):
+   ```bash
+   python3 firmware/chair_control/example.py /dev/cu.wchusbserial1420
+   ```
+   ```python
+   Chair("/dev/cu.wchusbserial1420")       # use your own name from step 4
+   ```
+
+The name usually stays the same for the same Mac and the same USB-C port, but can change on another port.
+Only one program can open it at a time: close the Arduino Serial Monitor, `screen`, and other scripts.
+
+### Linux
+`/dev/ttyUSB0` or `/dev/ttyACM0`. If you get "permission denied", add yourself to the `dialout` group and log in again.
 
 ---
 
@@ -205,7 +254,9 @@ D,<distance_cm>,<state>\n    every 50 ms; state = OK | OBSTACLE | WATCHDOG
 
 | Symptom | Fix |
 |---|---|
-| `WARNING: no status from the ESP32 bridge` | Wrong COM port, or the Arduino Serial Monitor / another script has the port. Close it, re-plug USB. |
+| `WARNING: no status from the ESP32 bridge` | Wrong COM port, or the Arduino Serial Monitor / another script has the port. Close it, re-plug USB. Also check that the cable is in the **COM** port and the sketch was uploaded with **USB CDC On Boot → Disabled** (section 2). |
+| Mac: no new `/dev/cu.*` entry when plugging in | Charge-only cable, or the CH34x driver is missing (section 2, macOS). |
+| `could not open port … FileNotFoundError` | That port name doesn't exist right now: cable unplugged, or the number or name changed. Check Device Manager or `ls /dev/cu.*`. |
 | `could not open port … Access is denied` | Another program has the port (Serial Monitor, a second script). |
 | `[bridge] LEFT board NOT FOUND` (or RIGHT) | Board not powered (kill key in?), or a data or ground wire is loose inside the shell. |
 | `state` stays `WATCHDOG` | Commands are not arriving: a blocked script, or the port was closed. |
@@ -219,6 +270,8 @@ D,<distance_cm>,<state>\n    every 50 ms; state = OK | OBSTACLE | WATCHDOG
 
 ## 9. Hardware reference (for maintainers)
 
+- **Laptop link:** the ESP32's **COM** port (CH343), sketch uploaded with **USB CDC On Boot → Disabled**. The native
+  USB port is damaged; see section 2.
 - **ESP32 wiring** (all in `bridge.ino`): left board TX/RX on GPIO17/18, right board on GPIO15/16. The bridge
   auto-detects which of the two is TX. One ESP32 GND to each board's **SWD GND hole**, never to plug pin P1
   (60 Hz hum). Each board's 5-pin master-slave plug: P2 = board TX (PA2), P3 = board RX (PA3), P5 = about 14 V

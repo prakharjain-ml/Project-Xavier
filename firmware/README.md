@@ -13,7 +13,8 @@ flashing and wiring the hoverboard mainboards.
 | Path | What |
 | --- | --- |
 | `bridge/bridge.ino` + `bridge/hover_link.h` | ESP32-S3 sketch: `C`/`S` line parser, 200 ms watchdog, HC-SR04 read, forward-obstacle stop, clamp to `MAX_SPEED`, hoverboard frame encoder, per-board TX/RX auto-detect (listens for the board's 0xABCD feedback before it sends) |
-| `chair_control/` | **Laptop Python library** `Chair`: `forward/backward/turn_left/turn_right/drive/stop(speed, seconds)`, 850 speed cap, acceleration ramp, auto-stop. Full docs in `chair_control/README.md` |
+| `chair_control/` | **Laptop Python library** `Chair`: `forward/backward/turn_left/turn_right/drive/stop(speed, seconds)`, 850 speed cap, acceleration ramp, auto-stop. Works on Windows, macOS, Linux. Full docs (including Mac setup) in `chair_control/README.md` |
+| `test_code/keyboard_drive.py` | HUMAN ONLY arrow-key teleop (Windows only): `python firmware/test_code/keyboard_drive.py 400 COM5`. Hold a key to drive, release = stop |
 | `hoverboard/flash_tools/` | Windows double-click scripts (OpenOCD + ST-Link V2) to unlock, flash and debug the GD32E235 boards, plus prebuilt `.bin` files |
 | `hoverboard/firmware_src/` | Our board layout `defines_2-3-9.h` and a patch against RoboDurden's firmware, to rebuild the `.bin` files |
 | `hoverboard/tools/bridge_bench_test.py` | HUMAN ONLY wheels-in-the-air test of laptop -> bridge -> hoverboard |
@@ -114,7 +115,12 @@ for long debug sessions.
 
 ## ESP32 bridge
 - Arduino IDE 2 + "esp32 by Espressif Systems" board package; board **ESP32S3 Dev Module**.
-- If you plug into the S3's native USB port, set **Tools -> USB CDC On Boot -> Enabled** so `Serial` is the USB port.
+- **Plug the laptop into the ESP32's COM port (CH343)** and upload with **Tools -> USB CDC On Boot -> Disabled**, so
+  `Serial` is the COM port. The native USB port's connector on our board was half torn off (Nov 15): it still powers
+  the board but carries no data (Windows: "Device Descriptor Request Failed"). If it is repaired and used again,
+  upload with that setting **Enabled**. A mismatch shows up as `bridge ?` / `no status from the ESP32 bridge`.
+- Port names: Windows `COM5` on Keshav's laptop (Device Manager -> "USB-Enhanced-SERIAL CH343"); macOS
+  `/dev/cu.wchusbserial…` or `/dev/cu.usbserial-…` (`ls /dev/cu.*`). Mac steps: `chair_control/README.md` section 2.
 - Wiring (VERIFIED, both wheels driving): remove the original 5-pin cable between the boards. Six ESP32 wires:
   LEFT (master) 5-pin P2/P3 <-> GPIO17/18, RIGHT (slave) 5-pin P2/P3 <-> GPIO15/16 (the sketch finds TX/RX by itself),
   one ESP32 GND to **each** board's SWD GND hole. Never P1 as ground, never P5. Signs: `LEFT_SIGN 1`, `RIGHT_SIGN -1`

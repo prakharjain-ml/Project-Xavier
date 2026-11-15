@@ -84,6 +84,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sun Nov 15, 1:05 AM - Claude Code (Opus 5.5), for Keshav
+- Done: ESP32 now runs over its **COM port** (CH343); the native USB connector was damaged in a drive test (power only, no data). Sketch re-uploaded with `USB CDC On Boot -> Disabled`; `bridge.ino` code unchanged. Added `firmware/test_code/keyboard_drive.py` (arrow-key teleop, Windows only). `chair_control/README.md`: COM-port and macOS setup (port names, CH34x driver, data cable).
+- In progress (file:function, state): none. A WiFi (UDP) fallback was prototyped and reverted (not in the repo).
+- Next step: Try `chair_control` on the demo MacBook (`ls /dev/cu.*`, then `python3 firmware/chair_control/example.py /dev/cu.<name>`). Optional: cross-platform pygame version of `keyboard_drive.py`. Repair the ESP32 USB-C connector when there is time.
+- Known bugs: `DEFAULT_PORT` in `chair.py` is still `COM4`, so pass the port explicitly (`COM5` on Keshav's laptop).
+- Evidence (command + result): `python test_code/keyboard_drive.py 200 COM5` after the re-upload -> both wheels drive on arrow keys (Keshav, wheels up). Before the re-upload: `bridge ?`, no motion.
+
 ### Sat Nov 14, ~9:52 PM - Claude Code (Opus 5.5), for Prakhar (Keshav's chair_control merged into prakhar/gaze)
 - Merged `origin/firmware/chair-control` (Keshav: both wheels, `firmware/chair_control/`, new `bridge.ino`) and `origin/main` (Vani: `models/api.py`, `models/train.py`). Only conflict: this file, both entries kept.
 - Checked: our `motors/driver.py` already speaks Keshav's bridge protocol exactly (his README says so too). We send `C,7,90,60` / `S,8`, which match the bridge's `sscanf("C,%ld,%ld,%ld")` / `sscanf("S,%ld")`; we parse its `D,0,OK`, `D,37,OBSTACLE`, `D,0,WATCHDOG` and ignore `#` lines. So `object_select --drive --serial <port>` drives his bridge with no new code. Do not run `chair_control` and our driver at the same time (one program per port).

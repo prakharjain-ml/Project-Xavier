@@ -3,7 +3,7 @@
 Speaks the docs/INTERFACES.md bridge protocol (C,<seq>,<left>,<right> every 50 ms) so it exercises the same path as
 motors/driver.py, and prints the bridge's D,<distance_cm>,<state> lines.
 
-Usage:  python firmware/hoverboard/bridge_bench_test.py COM5        (Windows; see Device Manager -> Ports)
+Usage:  python firmware/hoverboard/tools/bridge_bench_test.py COM5 [speed]   (Windows; see Device Manager -> Ports)
         python firmware/hoverboard/bridge_bench_test.py /dev/cu.usbmodemXXXX   (macOS)
 Sequence: stop 1 s, forward 80 for 3 s, stop 2 s, back 80 for 3 s, stop 2 s, turn left 80 for 3 s, stop.
 Then it goes silent for 1 s: the bridge must report WATCHDOG and the wheels must stop.
@@ -15,8 +15,9 @@ import time
 import serial  # pyserial
 
 port = sys.argv[1] if len(sys.argv) > 1 else "COM5"
+V = int(sys.argv[2]) if len(sys.argv) > 2 else 80   # optional speed, e.g. 120 if the wheel does not move
 ser = serial.Serial(port, 115200, timeout=0.1)
-time.sleep(2)  # ESP32 may reboot when the port opens
+time.sleep(3)  # ESP32 may reboot when the port opens; gives it time to find the boards
 seq = 0
 last_status = ""
 
@@ -28,7 +29,9 @@ def reader():
             line = ser.readline().decode(errors="ignore").strip()
         except serial.SerialException:
             return
-        if line:
+        if line.startswith("#"):
+            print("   ESP32:", line)      # board found / lost messages
+        elif line:
             last_status = line
 
 
@@ -50,11 +53,14 @@ try:
     print("WHEELS IN THE AIR? Starting in 3 s (Ctrl+C to abort)")
     time.sleep(3)
     drive(0, 0, 1, "stop")
-    drive(80, 80, 3, "forward")
+    if len(sys.argv) > 3 and sys.argv[3] == "hold":     # debug: keep driving forward for 60 s
+        drive(V, V, 60, "HOLD forward 60 s")
+        raise SystemExit
+    drive(V, V, 3, "forward")
     drive(0, 0, 2, "stop")
-    drive(-80, -80, 3, "backward")
+    drive(-V, -V, 3, "backward")
     drive(0, 0, 2, "stop")
-    drive(-80, 80, 3, "turn in place (left)")
+    drive(-V, V, 3, "turn in place (left)")
     drive(0, 0, 1, "stop")
     print("silence for 1 s (watchdog test) ...")
     time.sleep(1.0)

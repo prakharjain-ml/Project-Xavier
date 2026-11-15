@@ -1,5 +1,5 @@
 diff --git a/HoverBoardGigaDevice/Inc/config.h b/HoverBoardGigaDevice/Inc/config.h
-index 75aee4d..8a01593 100644
+index 75aee4d..c81b58c 100644
 --- a/HoverBoardGigaDevice/Inc/config.h
 +++ b/HoverBoardGigaDevice/Inc/config.h
 @@ -27,7 +27,9 @@
@@ -52,9 +52,34 @@ index 75aee4d..8a01593 100644
  		#define REMOTE_USART				0 	// 	1 is usually PA2/PA3 and the original master-slave 4pin header
  																		//	0 is usually PB6/PB7 and the empty header close to the flash-header
  																		//	2 is usually PB10/PB11 on stm32f103 boards
+@@ -122,7 +130,9 @@
+ 
+ 
+ #ifdef MASTER_OR_SINGLE
++	#ifndef NO_INACTIVITY_TIMEOUT
+ 	#define INACTIVITY_TIMEOUT 	8        	// Minutes of not driving until poweroff (not very precise)
++	#endif
+ 
+ 	#define CELL_LOW_LVL1     3.5       // Gently beeps, show green battery symbol above this Level.
+ 	#define CELL_LOW_LVL2     3.3       // Battery almost empty, show orange battery symbol above this Level. Charge now! 
+diff --git a/HoverBoardGigaDevice/Inc/defines.h b/HoverBoardGigaDevice/Inc/defines.h
+index 683a72c..826ed06 100644
+--- a/HoverBoardGigaDevice/Inc/defines.h
++++ b/HoverBoardGigaDevice/Inc/defines.h
+@@ -87,7 +87,9 @@
+ 
+ #ifdef DISABLE_BUTTON
+ 	#undef BUTTON
+-	#undef SELF_HOLD
++	#ifndef KEEP_SELF_HOLD	// keep the power latch even when the button is ignored
++		#undef SELF_HOLD
++	#endif
+ #endif
+ 
+ #ifdef DISABLE_CHARGESTATE
 diff --git a/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h b/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h
 new file mode 100644
-index 0000000..220af98
+index 0000000..9fa6f9d
 --- /dev/null
 +++ b/HoverBoardGigaDevice/Inc/defines/defines_2-3-9.h
 @@ -0,0 +1,74 @@
@@ -106,7 +131,7 @@ index 0000000..220af98
 +
 +#define VBATT           PA4		// confirmed
 +#define CURRENT_DC      PA6		// from 2-3-1/2-3-2, not verified
-+#define SELF_HOLD       PB2		// from 2-3-1/2-3-2, not verified
++#define SELF_HOLD       PA7		// NOT the latch: no free pin held power (find_hold_pin.py, 2026-11-14). Harmless; power button replaced by a kill-key jumper.
 +// BUTTON not defined on purpose: DISABLE_BUTTON is used for now (button bridged / board on charger)
 +
 +// Brushless Control DC (BLDC) defines
@@ -132,6 +157,21 @@ index 0000000..220af98
 +#define USART0_RX	PB7
 +#define USART1_TX	PA2
 +#define USART1_RX	PA3
+diff --git a/HoverBoardGigaDevice/Inc/remoteUart.h b/HoverBoardGigaDevice/Inc/remoteUart.h
+index 1adfc25..437945b 100644
+--- a/HoverBoardGigaDevice/Inc/remoteUart.h
++++ b/HoverBoardGigaDevice/Inc/remoteUart.h
+@@ -5,7 +5,9 @@
+ 	#define REMOTE_BAUD 19200
+ #endif
+ 
+-#define SEND_INTERVAL_MS	100	// sending SerialHover2Server data every 100 ms to ESP32/Arduino
++#ifndef SEND_INTERVAL_MS
++	#define SEND_INTERVAL_MS	100	// sending SerialHover2Server data every 100 ms to ESP32/Arduino
++#endif
+ 
+ #define LOST_CONNECTION_STOP_MILLIS 500		// set speed to 0 when 500 ms no command received
+ 
 diff --git a/HoverBoardGigaDevice/Src/RemoteAutodetect.c b/HoverBoardGigaDevice/Src/RemoteAutodetect.c
 index a5431a9..e008d33 100644
 --- a/HoverBoardGigaDevice/Src/RemoteAutodetect.c
@@ -222,10 +262,10 @@ index 219825a..6e5d8fb 100644
  static uint32_t get_page_size(uint32_t flash_size)
  {
 diff --git a/HoverBoardGigaDevice/platformio.ini b/HoverBoardGigaDevice/platformio.ini
-index fd707ae..71dd745 100644
+index fd707ae..d9ddee8 100644
 --- a/HoverBoardGigaDevice/platformio.ini
 +++ b/HoverBoardGigaDevice/platformio.ini
-@@ -64,3 +64,110 @@ board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
+@@ -64,3 +64,112 @@ board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld
  extra_scripts = add_RTT_task.py
      add_RTT_console.py
  
@@ -335,4 +375,6 @@ index fd707ae..71dd745 100644
 +    -D DISABLE_CHARGESTATE
 +    -D REMOTE_UART
 +    -D REMOTE_USART=1
++    -D NO_INACTIVITY_TIMEOUT
++    -D KEEP_SELF_HOLD
 +board_build.ldscript = lib/spl/gd32f1x0/gd32f1x0.ld

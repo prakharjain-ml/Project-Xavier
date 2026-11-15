@@ -146,6 +146,35 @@ def clear_destination(sel: Selection) -> Selection:
     return replace(sel, confirmed=None, must_look_away=sel.candidate is not None)
 
 
+LOCK_GRACE_S = 0.7  # the destination may vanish from detection this long before the chair stops (live, Sun Nov 15:
+#                    in a hall of chairs the tracker dropped the confirmed chair for a frame or two, ~5 stops a second)
+
+
+@dataclass(frozen=True)
+class DestinationMemory:
+    """The confirmed object as last detected, and the route planned to it then."""
+    track: Track | None = None
+    route: object = None
+    route_m: np.ndarray | None = None
+    seen_t: float = -math.inf  # frame time of that detection
+
+
+def hold_destination(mem: DestinationMemory, targets: list[Track], route, route_m, confirmed: int | None,
+                     frame_t: float):
+    """Bridge short detection dropouts of the confirmed object. Returns (memory, targets, route, route_m, held).
+    Seen this frame -> remembered as is. Missing for at most LOCK_GRACE_S -> the remembered box and route are put
+    back (held=True). Missing longer, or no destination -> nothing is invented and the chair stops as before."""
+    if confirmed is None:
+        return DestinationMemory(), targets, route, route_m, False
+    current = next((t for t in targets if t.id == confirmed), None)
+    if current is not None:
+        return DestinationMemory(current, route, route_m, frame_t), targets, route, route_m, False
+    recent = mem.track is not None and mem.track.id == confirmed and frame_t - mem.seen_t <= LOCK_GRACE_S
+    if not recent:
+        return mem, targets, route, route_m, False
+    return mem, [*targets, mem.track], mem.route, mem.route_m, True
+
+
 def drive_intent(sel: Selection, hit: int | None, targets: list[Track]) -> Target:
     """Hold-to-move (decision D1) for object mode: FWD only while the rider keeps looking at the CONFIRMED object
     and it is still in view. Looking away, losing the object, or no confirmation -> NONE -> the chair stops."""
@@ -444,6 +473,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     ctrl, nav, drive_note = ControllerState(), NavState(), ""
     route, route_m = None, None  # newest route to the destination (image pixels, metres), from the worker
     planned_for = None  # the destination the worker's newest result was planned for
+    memory = DestinationMemory()  # the confirmed object as last seen, for short detection dropouts
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     blink_state = BlinkConfirm()
     series = BlinkSeries()
@@ -491,6 +521,10 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                 planned_for = scene.destination
                 # A route planned for an earlier destination is not this destination's route.
                 route, route_m = (scene.route, scene.route_m) if scene.destination == sel.confirmed else (None, None)
+                memory, targets, route, route_m, held = hold_destination(memory, targets, route, route_m,
+                                                                         sel.confirmed, last_t)
+                if held:
+                    planned_for = sel.confirmed  # the remembered route was planned for this destination
             if frame is None:
                 continue
             before_sample = sample
@@ -618,7 +652,9 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
             (speed, turn), arrived = follow_step(route_m)
             wheels, no_route = to_wheels(speed, turn), route_m is None
         if arrived:
-            line = f"ARRIVED at {target.label} #{target.id}"
+            box = ",".join(str(int(v)) for v in target.bbox)
+            line = (f"ARRIVED at {target.label} #{target.id}" + (f" (reads {target.distance_m:.1f} m" if
+                    target.distance_m is not None else " (no distance") + f", box {box}, frame {frame_w}x{frame_h})")
             log.info(line)
             log_lines.append(line)
             # Arrived = no destination, and the object just reached must be looked away from before it can be
@@ -638,7 +674,12 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
     ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels, dwell_s=0)
     driver.send(command)
     if ctrl.state != before:
-        log.info("state %s -> %s", before.value, ctrl.state.value)
+        why = ""
+        if ctrl.state == State.STOPPED:  # say why, so a stop in the log can be explained without guessing
+            why = (f" (frame {now - frame_t:.2f} s old)" if now - frame_t > STALE_INTENT_S else
+                   " (destination not detected)" if target is None else
+                   " (destination reached or cleared)" if sel.confirmed is None else f" (intent {intent_target.value})")
+        log.info("state %s -> %s%s", before.value, ctrl.state.value, why)
     note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
     if target is not None and follow == "route" and no_route:
         # Just confirmed: the worker has not planned for this destination yet (about 0.15 s). Not moving either way.

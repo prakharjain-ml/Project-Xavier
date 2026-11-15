@@ -959,3 +959,26 @@ def test_nearest_object_is_highlighted_even_when_the_gaze_lands_beside_it():
     assert nearest_target((0.55, 0.6), boxes, 1) == 2  # clearly nearer to 2: switches
     assert nearest_target((0.45, 0.02), {1: (0.1, 0.6, 0.2, 0.9)}, None) is None  # far from everything
     assert nearest_target((0.5, 0.5), {}, None) is None
+
+
+def test_confirmed_object_missing_for_a_moment_is_held_with_its_last_route():
+    """Live, Sun Nov 15: the tracker dropped the confirmed chair for a frame or two and the chair stopped ~5x a second."""
+    from vision.object_select import LOCK_GRACE_S, DestinationMemory, hold_destination
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
+    route_m = np.array([[1.0, 0.0], [2.0, 0.0]])
+    mem, *_ = hold_destination(DestinationMemory(), [chair], "px", route_m, 4, 10.0)
+    # Act: next detection misses it, within the grace period
+    mem2, targets, route, got_m, held = hold_destination(mem, [], None, None, 4, 10.0 + LOCK_GRACE_S - 0.1)
+    # Assert
+    assert held and targets == [chair] and route == "px" and got_m is route_m
+
+
+def test_confirmed_object_missing_too_long_is_not_invented():
+    from vision.object_select import LOCK_GRACE_S, DestinationMemory, hold_destination
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
+    mem, *_ = hold_destination(DestinationMemory(), [chair], "px", np.zeros((2, 2)), 4, 10.0)
+    _, targets, route, route_m, held = hold_destination(mem, [], None, None, 4, 10.0 + LOCK_GRACE_S + 0.1)
+    assert not held and targets == [] and route is None and route_m is None
+    # and with no destination nothing is remembered at all
+    _, targets, *_ , held = hold_destination(mem, [], None, None, None, 10.1)
+    assert targets == [] and not held

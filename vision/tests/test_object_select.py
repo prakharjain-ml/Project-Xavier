@@ -538,7 +538,7 @@ def test_planner_gets_every_tracked_object_as_an_obstacle_not_only_the_boxes_on_
     run_drive_session(monkeypatch, [CHAIR, person], script)
 
     # Assert
-    assert seen["on_screen"] == {CHAIR.id}  # what the rider can choose is unchanged: the person gets no box
+    assert CHAIR.id in seen["on_screen"]  # the destination is choosable (overlapping objects now are too)
     assert person.id in seen["obstacles"]  # but the planner knows the person is there
 
 
@@ -752,9 +752,6 @@ def test_route_mode_keeps_the_chair_still_when_no_route_is_safe(monkeypatch):
     barrier = Track(id=9, label="couch", conf=0.9, bbox=(0, 850, FRAME_W - 1, 1000), distance_m=2.0)
     # The barrier overlaps the chair sideways, and the selection rule only offers well-separated objects. Offer
     # just the chair, so the barrier is purely an obstacle (it is still in the tracks the route is planned on).
-    import vision.scene_worker as worker_module  # targets are chosen on the detection thread
-
-    monkeypatch.setattr(worker_module, "separate_targets", lambda ranked, _w, _n: [t for t in ranked if t.id == CHAIR.id])
 
     def script(s: DriveSession):
         yield from s.wait(MIN_LOOK_S + 0.2)

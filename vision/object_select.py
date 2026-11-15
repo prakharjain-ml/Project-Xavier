@@ -27,9 +27,10 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from control.astar import astar_path
 from control.follow import follow_step
 from control.goto import NavState, nav_step
-from control.navigation import to_wheels
+from control.navigation import goal_from_target, to_wheels
 from control.state_machine import ControlInputs, ControllerState, step
 from shared.latest import drain_newest
 from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, State, StopRequest, StopSource, Target
@@ -76,6 +77,10 @@ MIN_LOOK_S = 0.3  # gaze must rest on a box this long before a clench / key conf
 DETECT_PERIOD_S = 0.15
 SESSION_LOG_DIR = "data/raw/sessions"  # one log file per run (data/raw is gitignored)
 JAW_METER_BLOCKS = 10  # status-bar clench meter: all blocks lit = at the rider's threshold
+ROUTE_RADIUS_M = 0.4  # planner keeps this much space around every obstacle: chair half-width 0.3 m + 0.1 m margin
+OBSTACLE_SAMPLE_M = 0.2  # obstacle points this far apart across an object (less than 2 x ROUTE_RADIUS_M: no gaps)
+OBSTACLE_DEPTH_M = 0.4  # an object is treated as this deep (a second row of points behind its front)
+STOP_BEFORE_TARGET_M = 0.4  # the route ends this far before the target's estimated position
 STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
@@ -181,7 +186,9 @@ def hit_boxes(targets: list[Track], frame_w: int, frame_h: int,
     """Each target's gaze area in 0-1 screen coordinates. Small objects are enlarged around their centre to at
     least min_size (webcam gaze is only accurate to a few degrees), shifted to stay on screen."""
     boxes = {}
-    for t in targets:
+    # Smallest first: the gaze test takes the first box it is inside, so an object in front of a bigger one
+    # (a chair before a couch) is the one chosen where they overlap; the couch is chosen beside the chair.
+    for t in sorted(targets, key=lambda t: (t.bbox[2] - t.bbox[0]) * (t.bbox[3] - t.bbox[1])):
         x1, y1, x2, y2 = t.bbox[0] / frame_w, t.bbox[1] / frame_h, t.bbox[2] / frame_w, t.bbox[3] / frame_h
         w, h = max(x2 - x1, min_size), max(y2 - y1, min_size)
         cx = min(max((x1 + x2) / 2, w / 2), 1 - w / 2)
@@ -271,14 +278,50 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
                                          guides=guides, guide_label=label, clock=now))
 
 
+def obstacle_points(tracks: list[Track], exclude_id: int | None, frame_w: int, hfov: float) -> np.ndarray:
+    """Every detected object except the target -> floor points in metres (forward, left), the chair at (0, 0).
+
+    Points every OBSTACLE_SAMPLE_M across the object's width, at its estimated distance and OBSTACLE_DEPTH_M
+    behind it, so even a long couch is a solid wall to the planner (no gaps between sample points)."""
+    focal = focal_length_px(frame_w, hfov)
+    points = []
+    for t in tracks:
+        if t.id == exclude_id or t.distance_m is None:
+            continue
+        x1, _, x2, _ = t.bbox
+        width_m = (x2 - x1) / focal * t.distance_m
+        count = max(3, math.ceil(width_m / OBSTACLE_SAMPLE_M) + 1)
+        for x in np.linspace(x1, x2, count):
+            offset = (x - frame_w / 2) / (frame_w / 2)
+            for extra in (0.0, OBSTACLE_DEPTH_M):
+                points.append(goal_from_target(offset, t.distance_m + extra, hfov))
+    return np.array(points, dtype=float).reshape(-1, 2)
+
+
 def plan_for_drive(frame: np.ndarray, tracks: list[Track], target: Track, hfov: float, cam_h: float,
-                   cam_pitch: float) -> tuple[Route | None, np.ndarray | None]:
-    """The route to the target as seen in this camera frame: (in image pixels, for drawing; in metres in the
-    chair's frame, for the follower). Any failure gives (None, None), and no route means the chair stays put."""
+                   cam_pitch: float) -> tuple[None, np.ndarray | None]:
+    """The route to the target in metres in the chair's frame (for the follower and the chevrons), or None.
+
+    Simple and robust on purpose: every detected object becomes a block on a 10 cm floor grid, grown by the
+    chair's half-width plus a margin, and A* (control/astar.py) finds the shortest way around them to a stop
+    point in front of the target. The same idea as the stereo-camera path planner, with our single camera's
+    distance estimates instead of stereo depth. Floor the camera cannot see is assumed open: the ESP32's
+    ultrasonic stop is the backstop for anything the detector misses. Any failure gives None (no movement).
+    cam_h / cam_pitch are unused here; kept so the caller's signature does not change."""
     try:
-        view = floor_view(frame.shape[1], frame.shape[0], hfov, cam_h, cam_pitch)
-        route, _ = plan(frame, tracks, target, None, view)
-        return (route, floor_metres(route.points, view)) if route is not None else (None, None)
+        if target.distance_m is None:
+            return None, None
+        frame_w = frame.shape[1]
+        centre = (target.bbox[0] + target.bbox[2]) / 2
+        goal = np.array(goal_from_target((centre - frame_w / 2) / (frame_w / 2), target.distance_m, hfov))
+        distance = float(np.hypot(*goal))
+        if distance <= STOP_BEFORE_TARGET_M:
+            return None, None  # already there
+        stop = goal * (distance - STOP_BEFORE_TARGET_M) / distance
+        path = astar_path(tuple(stop), obstacle_points(tracks, target.id, frame_w, hfov), ROUTE_RADIUS_M)
+        if path is None or len(path) < 2:
+            return None, None
+        return None, np.array(path[1:], dtype=float)  # path[0] is the chair itself
     except Exception:
         log.exception("route planning failed: no route, the chair stays stopped")
         return None, None

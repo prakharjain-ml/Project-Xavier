@@ -153,6 +153,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sun Nov 15, ~1:40 AM - Claude Code (Opus 5.5), for Prakhar (simple A* planner; simulated end to end)
+- Gaze screen route planner replaced (Prakhar approved): every detected object becomes points on a 10 cm floor grid (every 0.2 m across it, at its estimated distance and 0.4 m behind), grown by 0.4 m (chair half-width 0.3 m + 0.1 m), and `control/astar.py` finds the shortest way to a stop point 0.4 m before the target. Floor the camera cannot see is assumed open; the ultrasonic stop is the backstop. The floor-colour planner (`vision/route_scene.py`) refused every route on both real photos; it is still used by the mouse preview only.
+- Overlapping objects are now both choosable (a chair in front of the couch you want); where they overlap, the smaller one is picked.
+- Simulation (`tools/sim_drive.py`: real run loop, state machine, planner, follower and driver into a fake port; scripted camera, detections, gaze, J as the clench): couch confirmed -> DWELLING -> MOVING after 1.5 s, drive lines ramp 8,16,24... to FORWARD + RIGHT 103,50; with a chair right on the line, the route bends round it ([1.6,0.0] -> [2.4,-0.5] -> [2.6,-1.1]) and the wheels run 101,101. Chevrons and "Toward couch · 3.2 m" drawn: `docs/img/sim_drive_chevrons.jpg`.
+- Fixed on the way: chevrons were never drawn for a route of one leg (they started after the first visible route point).
+- Evidence: `python -m pytest -q` -> `594 passed`. Not yet run live or on the hoverboard.
+
 ### Sun Nov 15, ~1:13 AM - Claude Code (Opus 5.5), for Prakhar (can we tell a clench happened?)
 - Prakhar, live: clenched on an object, "it did become filled in" but no route. Two causes: (1) the fill appeared just from looking (looked-at and confirmed looked the same); (2) `./demo.sh jaw` has no `--drive --follow route`, so no route is ever planned in that mode (use `./demo.sh mock`).
 - Fixed: a looked-at object now has a light fill; only the confirmed destination gets the strong fill and "· destination" on its label. Status bar shows `DESTINATION: <object>` and a live jaw meter (10 blocks, full at the rider's threshold, "CLENCH" above it). Every clench is logged ("JAW CLENCH detected"), and every session now writes a log file to `data/raw/sessions/` (gitignored), so a run can be checked afterwards. The past session wrote no file, so it cannot be checked.

@@ -19,10 +19,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from vision.detect_track import MAX_TARGETS, Track, pick_targets, separate_targets
+from vision.detect_track import Track, pick_targets
 
 log = logging.getLogger("vision.scene_worker")
 
+MAX_CHOOSABLE = 6  # at most this many objects can be chosen at once (the steadiest ones)
 IDLE_WAIT_S = 0.005  # nothing new to do: check again this soon (short, so a new frame is picked up quickly)
 STOP_JOIN_TIMEOUT_S = 2.0
 
@@ -81,8 +82,9 @@ class SceneWorker:
         tracks = self._detect(frame)
         now = time.monotonic()
         self._first_seen = {**{t.id: now for t in tracks if t.id not in self._first_seen}, **self._first_seen}
-        targets = separate_targets(pick_targets(tracks, self._first_seen, max_n=len(tracks)), frame.shape[1],
-                                   MAX_TARGETS)
+        # Objects may overlap in the picture (a chair in front of the couch you want): both stay choosable. The
+        # old "well separated" rule came from the flicker-box design, and it hid the object behind an obstacle.
+        targets = pick_targets(tracks, self._first_seen, max_n=MAX_CHOOSABLE)
         with self._lock:
             destination = self._destination
         route = route_m = None

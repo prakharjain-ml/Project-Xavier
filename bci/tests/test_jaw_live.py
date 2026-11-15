@@ -308,3 +308,46 @@ def test_jaw_source_warns_and_never_confirms_when_the_live_signal_goes_flat(monk
 
     # Assert: the problem is in the log, the thread is still alive (a flat signal is not a crash), no confirm
     assert warned and source.alive() and confirmed is False
+
+
+def _noise(level_uv: float, seconds: float, fs: float = 1000.0, seed: int = 0):
+    import numpy as np
+
+    return np.random.default_rng(seed).normal(0.0, level_uv, (2, int(seconds * fs)))
+
+
+def _calibrated_stream():
+    from bci.jaw_live import JawStream
+
+    stream = JawStream(1000.0)
+    stream.collect("relaxed", _noise(5.0, 5.0, seed=1))
+    stream.collect("clench", _noise(80.0, 3.0, seed=2))
+    stream.finish_calibration()
+    return stream
+
+
+def test_a_signal_far_stronger_than_a_clench_is_a_loose_electrode_and_never_confirms():
+    """Real recording, Sat Nov 14: an electrode came off the temple and was pressed back. The signal was 4x to
+    24x a clench for 11 s and the detector confirmed 4 times."""
+    stream = _calibrated_stream()
+
+    fired = stream.push(_noise(1500.0, 3.0, seed=3))  # about 19x the clench level
+
+    assert fired == []
+    assert "loose electrode" in stream.signal_problem
+
+
+def test_after_the_electrode_is_back_a_normal_clench_confirms_again():
+    stream = _calibrated_stream()
+    stream.push(_noise(1500.0, 2.0, seed=3))  # electrode off
+
+    during_rest = stream.push(_noise(5.0, 1.5, seed=4))  # back on, rider relaxed for longer than the recovery wait
+    clench = stream.push(_noise(80.0, 1.0, seed=5))
+
+    assert during_rest == [] and len(clench) == 1
+    assert stream.signal_problem is None
+
+
+def test_a_hard_clench_twice_the_calibrated_level_still_confirms():
+    stream = _calibrated_stream()
+    assert len(stream.push(_noise(160.0, 1.0, seed=6))) == 1

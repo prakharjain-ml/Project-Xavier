@@ -18,6 +18,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 ---
 
 ## bci/ (owner: Vani)
+### Sat Nov 14, ~8:18 PM - Claude Code (Fable 5.2), for Prakhar (first real-head jaw recording, loose-electrode guard)
+- Measured (Prakhar, electrodes on both temples, N1P / N2P, Wi-Fi shield, about 1000 Hz, 73 s, `~/Documents/OpenBCI_GUI/Recordings/OpenBCISession_2026-11-14_20-09-05/`): relaxed 6.7 uV in the muscle band, clench 97 uV, ratio 14.5x (minimum is 3x). Channel 1 never railed; channel 2 railed in 0.5% of samples (its electrode came off for about 11 s). Three gaps in the stream, about 413 samples lost in total.
+- Offline, same detector as the live program: 13 confirms in the clench block (10 to 42 s), evenly 2 to 3 s apart. NOT yet known: how many clenches Prakhar actually made, and whether the 6 confirms after 53 s were clenches or talking. So hit rate and false-confirm rate are still unmeasured.
+- Bug found and fixed: while the electrode was off and being pressed back (42 to 53 s) the detector confirmed 4 times. New guard (`ARTIFACT_RATIO = 4`): a window more than 4x the rider's calibrated clench is treated as a bad signal, cannot confirm, and blocks confirms for 1 s. On this recording that gives 0 confirms in that stretch and leaves the others unchanged.
+- Evidence: `python -m pytest -q bci/tests` -> 48 passed; with the guard switched off the new test's loose-electrode signal confirms.
+- Still to do by a human: the live run (`python -m bci.jaw_live --wifi --channels 1,2`) with counted clenches and 30 s of talking.
+
 ### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: jaw confirm)
 - Done: calibration refuses a dead or railed headset (all zeros, or the constant railed value, used to give threshold 0 and a confirm 0.3 s after start). At run time a flat or railed window never counts toward a clench, cancels one in progress, and blocks confirms for 1 s. A crashed reader thread is logged and visible through `source.alive()` / `source.error`.
 - Strict on purpose: one bad window on any channel in use fails calibration. With channels 1,2 and channel 2 railed, fix the electrode or pass `--jaw-channels 1`.

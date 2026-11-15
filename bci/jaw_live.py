@@ -21,7 +21,16 @@ from collections.abc import Callable
 
 import numpy as np
 
-from bci.jaw import WINDOW_S, JawState, calibrate_threshold, dead_reason, emg_rms, mark_dead, update_jaw
+from bci.jaw import (
+    ARTIFACT_RATIO,
+    WINDOW_S,
+    JawState,
+    calibrate_threshold,
+    dead_reason,
+    emg_rms,
+    mark_dead,
+    update_jaw,
+)
 
 log = logging.getLogger("bci.jaw_live")
 
@@ -41,6 +50,7 @@ class JawStream:
         self.signal_problem: str | None = None  # live: why the newest window was flat or railed, None if fine
         self.threshold: float | None = None
         self.clench_ratio: float | None = None
+        self.clench_level: float | None = None  # this rider's typical clench (uV in the muscle band)
         self._state, self._t = JawState(), 0.0
 
     def _windows(self, chunk: np.ndarray):
@@ -72,6 +82,7 @@ class JawStream:
         # Measured on THIS rider: how much stronger a clench is than rest (the number for the Devpost/gallery).
         threshold = calibrate_threshold(relaxed, strongest)  # raises ValueError before anything is stored
         self.clench_ratio = float(np.median(strongest) / max(np.median(relaxed), 1e-9))
+        self.clench_level = float(np.median(strongest))
         self.threshold = threshold
         self._buffer = np.zeros((0, 0))
         return self.threshold
@@ -84,10 +95,15 @@ class JawStream:
             if self.threshold is None:
                 continue
             self.signal_problem = dead_reason(window)
-            if self.signal_problem is not None:  # flat or railed: not a measurement, so it can never confirm
+            level = emg_rms(window, self.fs)
+            if self.signal_problem is None and self.clench_level is not None \
+                    and level > ARTIFACT_RATIO * self.clench_level:
+                # Far stronger than this rider's clench: a loose or touched electrode, not muscle.
+                self.signal_problem = f"signal {level / self.clench_level:.0f}x a clench (loose electrode?)"
+            if self.signal_problem is not None:  # flat, railed or far too big: it can never confirm
                 self._state = mark_dead(self._state, self._t)
                 continue
-            self._state, hit = update_jaw(self._state, emg_rms(window, self.fs), self._t, self.threshold)
+            self._state, hit = update_jaw(self._state, level, self._t, self.threshold)
             if hit:
                 fired.append(self._t)
         return fired

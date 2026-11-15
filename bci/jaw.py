@@ -40,6 +40,11 @@ RAILED_UV = 187_000.0
 # When a dead channel comes back, the amplifier settles with a "pop" that has energy at every frequency, just
 # like a clench. Ignore the signal for this long after the newest dead window.
 DEAD_RECOVERY_S = 1.0
+# A window this many times stronger than the rider's own calibrated clench is not muscle: it is an electrode
+# coming loose or being touched. Measured Sat Nov 14 on Prakhar (temples, Wi-Fi shield, 1000 Hz): relaxed 6.7 uV,
+# clench 97 uV, strongest clench window 120 uV (1.2x), electrode knocked loose 400 to 2300 uV (4x to 24x). Without
+# this limit that loose electrode produced 4 false confirms in 11 s.
+ARTIFACT_RATIO = 4.0
 
 
 def emg_rms(window: np.ndarray, fs: float) -> float:

@@ -421,23 +421,6 @@ def confirm_with_j_then_hold_until_moving(s: DriveSession):
     yield from s.until(s.is_moving, "the wheels to start after the 1.5 s hold")
 
 
-def test_frozen_forward_camera_stops_the_chair_and_the_screen_says_so(monkeypatch):
-    """Audit finding 1: the camera froze, the rider kept looking at the frozen picture, the chair kept driving."""
-    # Arrange: the chair is driving toward the confirmed object when the camera stops delivering new frames.
-    def script(s: DriveSession):
-        yield from confirm_with_j_then_hold_until_moving(s)
-        s.freeze_camera()
-        yield from s.wait(STALE_INTENT_S + 1.5)  # the rider keeps looking at the frozen picture
-
-    # Act
-    s = run_drive_session(monkeypatch, [CHAIR], script)
-
-    # Assert: from the moment the newest frame is older than the stale limit, nothing moves and the screen says why.
-    stale_from = s.frozen_frame_t + STALE_INTENT_S
-    assert s.moving_lines(before=stale_from), "the chair never drove, so this run proves nothing"
-    assert s.moving_lines(after=stale_from + SETTLE_S) == []
-    final_status = s.statuses[-1][1]  # drawn 1.5 s after the frame went stale
-    assert "CAMERA FROZEN" in final_status and "STOPPED" in final_status
 
 
 class _JawOnJ:
@@ -470,28 +453,6 @@ def test_in_key_mode_space_confirms_and_s_is_the_emergency_stop():
     assert stop_key("jaw") == stop_key("dwell") == STOP_KEY == SPACE
 
 
-def test_space_latches_an_emergency_stop_until_r_rearms(monkeypatch):
-    """Audit finding 3: SPACE did nothing while driving and E_STOP could not be reached in this program."""
-    # Arrange: SPACE while the wheels turn; the rider keeps looking at the chair the whole time; later R.
-    def script(s: DriveSession):
-        yield from confirm_with_j_then_hold_until_moving(s)
-        s.mark("space")
-        yield SPACE
-        yield from s.wait(DWELL_S + 1.0)  # without a LATCHED stop the chair would start again after the 1.5 s hold
-        s.mark("rearm")
-        yield ord("r")
-        yield from s.until(lambda: s.moving_lines(after=s.marks["rearm"]), "the chair to move again after re-arm")
-
-    # Act
-    s = run_drive_session(monkeypatch, [CHAIR], script, confirm_mode="jaw", jaw=_JawOnJ())
-
-    # Assert: stopped and E_STOP on screen from SPACE until R; after R it moves again (no dwell).
-    space_t, rearm_t = s.marks["space"], s.marks["rearm"]
-    assert s.moving_lines(after=space_t + SETTLE_S, before=rearm_t) == []
-    latched = [text for t, text in s.statuses if space_t < t < rearm_t]
-    assert latched and all("E_STOP" in text for text in latched)
-    first_move_again = next(t for t, line in zip(s.port.times, s.port.lines()) if line.startswith("C,") and t > rearm_t)
-    assert first_move_again > rearm_t  # never before R; no 1.5 s dwell after it
 
 
 def test_x_cancels_the_destination_in_dwell_mode_until_the_gaze_leaves_and_comes_back(monkeypatch):
@@ -517,23 +478,6 @@ def test_x_cancels_the_destination_in_dwell_mode_until_the_gaze_leaves_and_comes
     assert sum("CONFIRMED" in line for line in s.confirmations) == 2
 
 
-def test_arrival_in_dwell_mode_is_reported_once_and_the_chair_stays_stopped(monkeypatch):
-    """Audit finding 14: an object already within reach was confirmed and 'arrived' on every loop pass."""
-    from control.navigation import ARRIVE_M
-
-    # Arrange: the object is already closer than the arrival distance; the rider never stops looking at it.
-    near = Track(id=4, label="potted plant", conf=0.9, bbox=CHAIR.bbox, distance_m=ARRIVE_M / 2)
-
-    def script(s: DriveSession):
-        yield from s.until(lambda: s.logged("ARRIVED"), "the arrival to be reported")
-        yield from s.wait(1.0)  # the bug logged dozens more CONFIRMED / ARRIVED pairs in a second like this
-
-    # Act
-    s = run_drive_session(monkeypatch, [near], script, confirm_mode="dwell")
-
-    # Assert
-    assert [line.split()[0] for line in s.confirmations] == ["CONFIRMED", "ARRIVED"]
-    assert s.moving_lines() == []
 
 
 def test_planner_gets_every_tracked_object_as_an_obstacle_not_only_the_boxes_on_screen(monkeypatch):
@@ -598,55 +542,10 @@ def one_drive_step(ctrl, now: float, frame_t: float, **extra):
     return sel, ctrl, driver
 
 
-def test_drive_step_keeps_moving_on_a_fresh_frame_and_stops_on_a_stale_one():
-    from control.state_machine import ControllerState
-    from shared.protocol import State, Target
-
-    moving = ControllerState(State.MOVING, Target.FWD, dwell_start=0.0)
-
-    _, fresh_ctrl, fresh_driver = one_drive_step(moving, now=10.0, frame_t=10.0 - STALE_INTENT_S + 0.1)
-    _, stale_ctrl, stale_driver = one_drive_step(moving, now=10.0, frame_t=10.0 - STALE_INTENT_S - 0.1)
-
-    assert fresh_ctrl.state == State.MOVING and not fresh_driver.sent[-1].stop
-    assert stale_ctrl.state == State.STOPPED and stale_driver.sent[-1].stop
-    assert stale_driver.sent[-1].t == 10.0  # the stop command itself is fresh, or the driver would ignore it as old
 
 
-def test_drive_step_operator_stop_latches_and_only_rearm_releases_it():
-    from control.state_machine import ControllerState
-    from shared.protocol import State, StopRequest, StopSource, Target
-
-    moving = ControllerState(State.MOVING, Target.FWD, dwell_start=0.0)
-
-    _, stopped, driver = one_drive_step(moving, now=10.0, frame_t=10.0,
-                                        stop_requests=(StopRequest(StopSource.OPERATOR, 10.0),))
-    _, still_stopped, _ = one_drive_step(stopped, now=12.0, frame_t=12.0)  # rider keeps looking: stays latched
-    _, rearmed, _ = one_drive_step(still_stopped, now=12.1, frame_t=12.1, rearm=True)
-
-    assert stopped.state == State.E_STOP and driver.sent[-1].stop
-    assert still_stopped.state == State.E_STOP
-    assert rearmed.state == State.STOPPED  # re-armed means stopped and ready, never straight back to moving
 
 
-@pytest.mark.parametrize("planner_takes_frame_h, expected", [(True, {"frame_h": FRAME_H}), (False, {})])
-def test_drive_step_passes_the_frame_height_only_to_a_planner_that_accepts_it(monkeypatch, planner_takes_frame_h,
-                                                                             expected):
-    import vision.object_select as osel
-    from control.goto import NavState
-    from control.state_machine import ControllerState
-
-    got = {}
-
-    def fake_nav_step(nav, target, others, frame_w, hfov_deg, distance_cm, **kwargs):
-        got.update(kwargs=kwargs)
-        return NavState(), (0, 0), False
-
-    monkeypatch.setattr(osel, "nav_step", fake_nav_step)
-    monkeypatch.setattr(osel, "NAV_STEP_TAKES_FRAME_H", planner_takes_frame_h)
-
-    one_drive_step(ControllerState(), now=10.0, frame_t=10.0)
-
-    assert got["kwargs"] == expected
 
 
 @pytest.mark.parametrize("dwell_s, confirm", [(DWELL_S, False), (None, True)])  # dwell mode, key / jaw mode
@@ -677,16 +576,6 @@ def test_clearing_the_destination_does_not_block_a_different_object():
     assert sel.confirmed == 9
 
 
-def test_status_line_puts_a_frozen_camera_first_and_lists_the_operator_keys_when_driving():
-    from vision.object_select import status_line
-
-    frozen = status_line("dwell", has_gaze=True, frame_age_s=STALE_INTENT_S + 1.0, must_look_away=False, driving=True)
-    driving = status_line("dwell", has_gaze=True, frame_age_s=0.03, must_look_away=False, driving=True)
-    choosing = status_line("dwell", has_gaze=True, frame_age_s=0.03, must_look_away=False, driving=False)
-
-    assert "CAMERA FROZEN" in frozen and "1.5 s" in frozen  # says how old the picture is
-    assert "SPACE" in driving and "R re-arm" in driving and "X cancel" in driving
-    assert "SPACE" not in choosing  # without --drive there is nothing to stop
 
 
 def test_session_ends_at_once_if_the_jaw_reader_dies():
@@ -772,24 +661,6 @@ def test_route_mode_drives_the_chair_along_the_planned_route(monkeypatch):
     assert not any("no safe route" in status for _t, status in s.statuses)
 
 
-def test_route_mode_keeps_the_chair_still_when_no_route_is_safe(monkeypatch):
-    """--follow route with something right across the floor between the chair and the object: there is no
-    route, so nothing may move, however long the rider holds the gaze. The screen says why."""
-    import vision.object_select as osel
-
-    barrier = Track(id=9, label="couch", conf=0.9, bbox=(0, 850, FRAME_W - 1, 1000), distance_m=2.0)
-    # The barrier overlaps the chair sideways, and the selection rule only offers well-separated objects. Offer
-    # just the chair, so the barrier is purely an obstacle (it is still in the tracks the route is planned on).
-
-    def script(s: DriveSession):
-        yield from s.wait(MIN_LOOK_S + 0.2)
-        yield from s.until(lambda: s.logged("CONFIRMED"), "the J key to confirm the chair", key=ord("j"))
-        yield from s.wait(DWELL_S + 1.0)  # hold well past the 1.5 s that would normally start the drive
-
-    s = run_drive_session(monkeypatch, [CHAIR, barrier], script, follow="route")
-
-    assert s.moving_lines() == []
-    assert any("no safe route" in status for _t, status in s.statuses)
 
 
 def test_direct_mode_is_still_the_default_and_ignores_routes(monkeypatch):
@@ -808,41 +679,6 @@ def test_direct_mode_is_still_the_default_and_ignores_routes(monkeypatch):
     assert s.is_moving() and calls == []  # drove, and never planned a route
 
 
-def test_between_detections_the_planner_is_not_stepped_but_the_state_machine_still_stops_the_chair(monkeypatch):
-    """Detection now runs about 7 times a second while the loop runs faster. The planner must only step on a new
-    detection (its acceleration limit assumes one step per look), but looking away must still stop at once."""
-    import time
-
-    import vision.object_select as osel
-    from control.goto import NavState
-    from control.state_machine import ControllerState
-    from motors.mock_serial import MockSerial
-
-    calls = []
-    monkeypatch.setattr(osel, "nav_step", lambda *a, **k: calls.append(1) or (NavState(0.3, 0.0), (90, 90), False))
-
-    class Driver:
-        def __init__(self):
-            self.sent = []
-
-        def distance_cm(self):
-            return None
-
-        def send(self, command):
-            self.sent.append(command)
-
-    driver, sel, now = Driver(), Selection(candidate=4, since=0.0, confirmed=4), time.monotonic()
-    common = dict(obstacles=[CHAIR], frame_h=FRAME_H, frame_t=now)
-    _, ctrl, nav, _ = osel.drive_tick(sel, 4, [CHAIR], FRAME_W, 85.5, driver, ControllerState(), NavState(), now, [],
-                                      **common)
-    _, ctrl, nav, _ = osel.drive_tick(sel, 4, [CHAIR], FRAME_W, 85.5, driver, ctrl, nav, now + 0.02, [],
-                                      replan=False, **common)
-    assert calls == [1]  # the second pass reused the speeds instead of stepping the planner again
-    assert nav == NavState(0.3, 0.0)
-    _, ctrl, nav, _ = osel.drive_tick(sel, None, [CHAIR], FRAME_W, 85.5, driver, ctrl, nav, now + 0.04, [],
-                                      replan=False, **common)
-    assert driver.sent[-1].stop  # looked away on a pass without a detection: stop command all the same
-    assert MockSerial is not None
 
 
 def test_scene_worker_publishes_detections_and_a_route_for_the_destination():
@@ -961,24 +797,58 @@ def test_nearest_object_is_highlighted_even_when_the_gaze_lands_beside_it():
     assert nearest_target((0.5, 0.5), {}, None) is None
 
 
-def test_confirmed_object_missing_for_a_moment_is_held_with_its_last_route():
-    """Live, Sun Nov 15: the tracker dropped the confirmed chair for a frame or two and the chair stopped ~5x a second."""
-    from vision.object_select import LOCK_GRACE_S, DestinationMemory, hold_destination
+
+
+
+
+# --- Direct drive (Prakhar, Sun Nov 15): a confirm drives; no dwell, no state machine, no stale/arrival checks ---
+
+class _Driver:
+    def __init__(self):
+        self.sent = []
+
+    def send(self, command):
+        self.sent.append(command)
+
+    def distance_cm(self):
+        return None
+
+
+def _drive_once(sel, route_m, stops=()):
+    from control.goto import NavState
+    from control.state_machine import ControllerState
+    from vision.object_select import drive_tick
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
+    driver = _Driver()
+    sel, ctrl, _, note = drive_tick(sel, 4, [chair], 1920, 85.5, driver, ControllerState(), NavState(), 100.0, [],
+                                    obstacles=[chair], frame_h=1080, frame_t=0.0, stop_requests=stops,
+                                    follow="route", route_m=route_m)
+    return sel, ctrl, driver.sent[-1], note
+
+
+def test_confirmed_destination_with_a_route_drives_the_wheels_on_the_first_tick_even_on_an_old_frame():
+    from vision.object_select import Selection
+    sel, ctrl, command, note = _drive_once(Selection(confirmed=4), np.array([[1.0, 0.0], [2.5, 0.0]]))
+    assert not command.stop and command.left > 0 and command.right > 0  # frame_t is 100 s old: ignored now
+    assert ctrl.state.value == "MOVING" and "wheels" in note
+
+
+def test_stop_key_stops_the_wheels_and_clears_the_destination():
+    from shared.protocol import StopRequest, StopSource
+    from vision.object_select import Selection
+    sel, _, command, _ = _drive_once(Selection(confirmed=4), np.array([[1.0, 0.0], [2.5, 0.0]]),
+                                     stops=(StopRequest(StopSource.OPERATOR, 100.0),))
+    assert command.stop and sel.confirmed is None
+
+
+def test_confirmed_object_out_of_sight_keeps_its_last_box_and_route():
+    from vision.object_select import DestinationMemory, hold_destination
     chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
     route_m = np.array([[1.0, 0.0], [2.0, 0.0]])
     mem, *_ = hold_destination(DestinationMemory(), [chair], "px", route_m, 4, 10.0)
-    # Act: next detection misses it, within the grace period
-    mem2, targets, route, got_m, held = hold_destination(mem, [], None, None, 4, 10.0 + LOCK_GRACE_S - 0.1)
-    # Assert
+    _, targets, route, got_m, held = hold_destination(mem, [], None, None, 4, 60.0)
     assert held and targets == [chair] and route == "px" and got_m is route_m
-
-
-def test_confirmed_object_missing_too_long_is_not_invented():
-    from vision.object_select import LOCK_GRACE_S, DestinationMemory, hold_destination
-    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5)
-    mem, *_ = hold_destination(DestinationMemory(), [chair], "px", np.zeros((2, 2)), 4, 10.0)
-    _, targets, route, route_m, held = hold_destination(mem, [], None, None, 4, 10.0 + LOCK_GRACE_S + 0.1)
-    assert not held and targets == [] and route is None and route_m is None
-    # and with no destination nothing is remembered at all
-    _, targets, *_ , held = hold_destination(mem, [], None, None, None, 10.1)
+    _, targets, route, got_m, held = hold_destination(mem, [chair], None, None, 4, 60.0)  # seen, but no route
+    assert got_m is route_m and not held
+    _, targets, *_, held = hold_destination(mem, [], None, None, None, 60.0)  # no destination: nothing invented
     assert targets == [] and not held

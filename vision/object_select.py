@@ -33,7 +33,7 @@ from control.goto import NavState, nav_step
 from control.navigation import goal_from_target, to_wheels
 from control.state_machine import ControlInputs, ControllerState, step
 from shared.latest import drain_newest
-from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, State, StopRequest, StopSource, Target
+from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, MotorCommand, State, StopRequest, StopSource, Target
 from vision.detect_track import (
     DEFAULT_MODEL,
     SEG_MODEL,
@@ -146,8 +146,6 @@ def clear_destination(sel: Selection) -> Selection:
     return replace(sel, confirmed=None, must_look_away=sel.candidate is not None)
 
 
-LOCK_GRACE_S = 0.7  # the destination may vanish from detection this long before the chair stops (live, Sun Nov 15:
-#                    in a hall of chairs the tracker dropped the confirmed chair for a frame or two, ~5 stops a second)
 
 
 @dataclass(frozen=True)
@@ -161,18 +159,20 @@ class DestinationMemory:
 
 def hold_destination(mem: DestinationMemory, targets: list[Track], route, route_m, confirmed: int | None,
                      frame_t: float):
-    """Bridge short detection dropouts of the confirmed object. Returns (memory, targets, route, route_m, held).
-    Seen this frame -> remembered as is. Missing for at most LOCK_GRACE_S -> the remembered box and route are put
-    back (held=True). Missing longer, or no destination -> nothing is invented and the chair stops as before."""
+    """Keep driving to the confirmed object when detection or planning drops it. Returns (memory, targets, route,
+    route_m, held). Seen -> remembered. Not seen -> its last box and route are put back (held=True). A frame with
+    no route -> the last route. No destination -> nothing remembered."""
     if confirmed is None:
         return DestinationMemory(), targets, route, route_m, False
     current = next((t for t in targets if t.id == confirmed), None)
+    known = mem.track is not None and mem.track.id == confirmed
     if current is not None:
+        if route_m is None and known and mem.route_m is not None:  # no route this frame: keep the last one
+            route, route_m = mem.route, mem.route_m
         return DestinationMemory(current, route, route_m, frame_t), targets, route, route_m, False
-    recent = mem.track is not None and mem.track.id == confirmed and frame_t - mem.seen_t <= LOCK_GRACE_S
-    if not recent:
+    if not known:
         return mem, targets, route, route_m, False
-    return mem, [*targets, mem.track], mem.route, mem.route_m, True
+    return mem, [*targets, mem.track], mem.route, mem.route_m, True  # out of sight: keep its last box and route
 
 
 def drive_intent(sel: Selection, hit: int | None, targets: list[Track]) -> Target:
@@ -320,8 +320,6 @@ def stop_key(confirm_mode: str) -> int:
 
 def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look_away: bool, driving: bool) -> str:
     """Text at the bottom of the screen, most urgent first: a frozen camera, then no gaze, then what to do next."""
-    if frame_age_s > STALE_INTENT_S:
-        return f"CAMERA FROZEN (no new picture for {frame_age_s:.1f} s)"
     if not has_gaze:
         return "NO GAZE (face not seen / eyes closed)"
     stop_name = "S" if confirm_mode in ("key", "blink") else "SPACE"
@@ -592,12 +590,11 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             gaze_frames += point is not None
             # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
             status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
-            frozen = status if status.startswith("CAMERA FROZEN") else ""  # the most urgent fact stays first
             if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
                 status = drive_note.strip(" |") + "  |  " + status
             chosen = next((t for t in targets if t.id == sel.confirmed), None)
             if chosen is not None and driver is not None:
-                status = ((frozen + "  |  " if frozen else "") + f"DRIVING TO {chosen.label}  |  "
+                status = (f"DRIVING TO {chosen.label}  |  "
                           f"{drive_note.strip(' |')}  |  "
                           f"triple-blink or {'S' if confirm_mode in ('key', 'blink') else 'SPACE'} to stop  X cancel")
             elif chosen is not None:
@@ -626,66 +623,33 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
                frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False,
                follow: str = "direct", route_m: np.ndarray | None = None, replan: bool = True,
                route_pending: bool = False):
-    """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
-    whether the chair may move (no dwell: moves on confirm; obstacle block, stop by default), the driver sends it.
-
-    targets = the boxes the rider can choose; obstacles = EVERY tracked object (the planner skips the target
-    itself). frame_t = when the camera frame all of this was computed from arrived. stop_requests / rearm = the
-    operator's SPACE / R keys for this step.
+    """One drive step: confirmed destination -> follow its route -> wheels, every pass.
+    No dwell, no safety state machine, no stale-frame or arrival checks (Prakhar, Sun Nov 15: "if someone confirms
+    something that means they confirmed it"). Only the stop key here, or X / triple blink in the loop, stops the
+    chair; they also clear the destination. The ESP32's own 200 ms watchdog still stops it if commands stop coming.
     """
+    if stop_requests:
+        log.info("STOP key: chair stopped, destination cleared")
+        sel = clear_destination(sel)
     target = next((t for t in targets if t.id == sel.confirmed), None)
-    wheels, no_route = (0, 0), False
+    wheels = (0, 0)
     if target is not None:
-        extra = {"frame_h": frame_h} if NAV_STEP_TAKES_FRAME_H else {}
-        if replan:
-            nav, wheels, arrived = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm(), **extra)
+        if follow == "route":
+            (speed, turn), _ = follow_step(route_m)  # no route yet -> (0, 0) until the worker's first plan arrives
+            wheels = to_wheels(speed, turn)
+        elif replan:
+            nav, wheels, _ = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm())
         else:
-            # Between detections: keep the speeds from the last planner step. The planner limits acceleration per
-            # step assuming one step per camera look (about 0.1 s); stepping it on every faster pass would let it
-            # speed up several times quicker than designed. The state machine below still runs every pass, so
-            # looking away, SPACE and a stale frame stop the chair just as fast as before.
-            wheels, arrived = to_wheels(nav.v, nav.w), False
-        if follow == "route" and not arrived:
-            # Route mode: nav_step above is kept only for its arrival rule (the object's foot has left the
-            # picture). The wheel speeds come from following the planned route. No route this frame (route_m is
-            # None) gives (0, 0): the chair never moves on a guess.
-            (speed, turn), arrived = follow_step(route_m)
-            wheels, no_route = to_wheels(speed, turn), route_m is None
-        if arrived:
-            box = ",".join(str(int(v)) for v in target.bbox)
-            line = (f"ARRIVED at {target.label} #{target.id}" + (f" (reads {target.distance_m:.1f} m" if
-                    target.distance_m is not None else " (no distance") + f", box {box}, frame {frame_w}x{frame_h})")
-            log.info(line)
-            log_lines.append(line)
-            # Arrived = no destination, and the object just reached must be looked away from before it can be
-            # chosen again. So the arrival is reported once and the chair stays stopped until a new choice.
-            sel, nav, wheels = clear_destination(sel), NavState(), (0, 0)
-    else:
-        nav = NavState()
-    intent_target = drive_intent(sel, hit, targets)
-    # The Intent carries the time of the camera FRAME, not the time of this loop pass. A frozen camera keeps
-    # handing back its last frame; stamped with `now` it would look fresh forever. Stamped with the frame's own
-    # arrival time, the state machine's stale rule (older than STALE_INTENT_S -> STOPPED) stops the chair.
-    # The MotorCommand below is still stamped `now`: the driver ignores commands that are themselves old.
-    inputs = ControlInputs(intent=Intent(intent_target, 1.0 if intent_target != Target.NONE else 0.0, t=frame_t),
-                           stop_requests=stop_requests, rearm=rearm, distance_cm=driver.distance_cm())
-    before = ctrl.state
-    # dwell_s=0: a confirm IS the decision; the chair moves on the very next tick (no 1.5 s second wait).
-    ctrl, command, _ = step(ctrl, inputs, now, mapping=lambda _target: wheels, dwell_s=0)
-    driver.send(command)
-    if ctrl.state != before:
-        why = ""
-        if ctrl.state == State.STOPPED:  # say why, so a stop in the log can be explained without guessing
-            why = (f" (frame {now - frame_t:.2f} s old)" if now - frame_t > STALE_INTENT_S else
-                   " (destination not detected)" if target is None else
-                   " (destination reached or cleared)" if sel.confirmed is None else f" (intent {intent_target.value})")
-        log.info("state %s -> %s%s", before.value, ctrl.state.value, why)
-    note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
-    if target is not None and follow == "route" and no_route:
-        # Just confirmed: the worker has not planned for this destination yet (about 0.15 s). Not moving either way.
-        note += " (planning route)" if route_pending else " (no safe route)"
-    if ctrl.state == State.E_STOP:  # latched: only the operator's R key releases it
-        note += " (emergency stop: press R to re-arm)"
+            wheels = to_wheels(nav.v, nav.w)  # between detections: keep the last speeds
+    moving = wheels != (0, 0)
+    driver.send(MotorCommand(int(wheels[0]), int(wheels[1]), not moving, now))
+    state = State.MOVING if moving else State.STOPPED
+    if state != ctrl.state:
+        log.info("state %s -> %s", ctrl.state.value, state.value)
+    ctrl = ControllerState(state=state)
+    note = f"  |  {state.value}" + (f" wheels {int(wheels[0])},{int(wheels[1])}" if moving else "")
+    if target is not None and follow == "route" and route_m is None:
+        note += " (planning route)"
     return sel, ctrl, nav, note
 
 

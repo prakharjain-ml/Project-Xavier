@@ -84,6 +84,12 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## motors/ and firmware/ (owner: Pratosh, with Keshav)
+### Sun Nov 15, ~3:30 AM - Claude Code (Opus 5.5), for Prakhar (direct drive, on Prakhar's request)
+- Object mode no longer uses the safety state machine, dwell, stale-frame ("camera frozen") or arrival rules: a
+  confirm sends the route's wheel speeds every pass until S/SPACE, X or a triple blink. If the object or the route
+  drops out, the last box and route are kept. The ESP32 200 ms watchdog and the kill switch are the only other stops.
+- Evidence: `python -m pytest -q` -> 595 passed.
+
 ### Sun Nov 15, ~3 AM - Claude Code (Opus 5.5), for Prakhar (chair.py mapping, lock-on destination, triple blink)
 - New `motors/chair_driver.py`: every follower command maps onto Keshav's `chair_control.Chair` (stop / forward /
   backward / turn_left / turn_right / drive), capped at 300, with its own 0.2 s stop watchdog; logs `MOTOR ...`.

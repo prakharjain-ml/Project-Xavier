@@ -24,8 +24,25 @@ button.
    there with the chair's real width, and it is drawn back onto the camera image. Planning in image pixels
    was tried first and was wrong: near the horizon one pixel of height is far more floor than one pixel of
    width. Gemini's suggested route points are only hints, and only those on free floor are used.
-5. Motors: unchanged. The existing local planner and the safety state machine drive the chair. The route on
-   screen is a preview and is not yet the route the chair drives.
+5. Motors: two modes in `python -m vision.object_select --drive`. Default (`--follow direct`): the older
+   planner steers straight at the object (`control/goto.py`). `--follow route`: the chair follows the route
+   (`control/follow.py`). In both, the safety state machine decides whether the chair may move at all.
+
+## How the chair follows the route (`--follow route`)
+1. Every camera frame, the route to the chosen object is planned again from what the camera sees now
+   (`vision/object_select.py` `plan_for_drive`, about 37 ms at 1920 x 1080).
+2. The route is converted to metres in the chair's own frame: forward and left of the camera
+   (`vision/route_scene.py` `floor_metres`).
+3. Pure pursuit (`control/follow.py` `follow_step`): take the point 0.6 m along the route and steer along the
+   circle through the chair and that point. Speed eases off in bends and over the last metre. A point far to
+   the side makes the chair turn on the spot first. It never reverses.
+4. Speed and turn rate become left and right wheel speeds (`control/navigation.py` `to_wheels`), pass through
+   the state machine (1.5 s hold, hold-to-move, stale-frame stop, operator stop) and the driver's soft start.
+5. Because the route is re-planned every frame, the chair is always chasing a point on the newest route, so
+   steering errors do not build up. In simulation (ideal chair, 38 degree corners) it stayed within 8.4 cm of
+   the route; routes are planned 8 cm wider than the chair on each side to cover that.
+6. No route in a frame means wheel speeds (0, 0) for that frame. The chair never moves on a guess (C4).
+7. Arrival: less than 0.5 m of route left, or the object's foot has left the bottom of the picture.
 
 ## Constraints that must not be broken
 | # | Constraint | Enforced in |
@@ -42,6 +59,7 @@ button.
 | C10 | The API key stays in `.env`. Frames are downscaled, sent only when scene AI is on, never saved or logged. | `vision/scene_ai.py` |
 | C11 | The screen stays above 15 fps while Gemini works; at most one Gemini call every 3 s. | `vision/scene_ai.py`, `vision/hud.py` |
 | C12 | The screen says whether Gemini's no-go zones for this view were applied: Gemini-checked (solid route) or local estimate, unverified (dashed route). | `vision/hud.py`, `vision/nav_preview.py` |
+| C13 | The strip of floor between the chair and the nearest floor the camera sees is never seen. If an object runs off the bottom of the picture, its foot is in that strip, and the route's first point must be at least (chair half-width x distance to nearest visible floor / 0.6 m) to the side of it. Otherwise: no route. | `vision/route_scene.py` `blind_strip_clear` |
 
 ## Module contract
 All coordinates are pixels in the working camera frame (x right, y down). Masks are `bool` arrays of shape
@@ -131,10 +149,13 @@ def plan(shape, tracks, target, advice, view) -> tuple[Route | None, bool]   # r
 ```
 
 ## Known limits (Sat Nov 14)
-- The route on screen is not yet the route the chair drives. The motors follow the existing drive planner.
-- The route is only drawn by the mouse preview (`vision/nav_preview.py`). The real gaze screen
-  (`vision/object_select.py`) has the outlines, eye cursor, label, reticle and bars, but no route yet: planning
-  adds work to the loop that feeds the motors, and that needs a wheels-up timing check first.
+- Route following (`--follow route`) has only run against a mock serial port and in simulation. It has never
+  run on the chair. While the chair moves, routes use the local floor estimate only (Gemini's answer is only
+  valid for a still view), so they are drawn dashed.
+- Both test scenes are now refused, correctly: on the hall frame the chairs stand 1.4 m ahead, inside the
+  unseen strip, with a gap of about 0.9 m between them (C13 needs about 1.1 m to each side with a level
+  camera). An earlier version of this code drew a route through that gap. With the phone tilted down 20
+  degrees the nearest visible floor is about 0.8 m away and C13 needs about 0.5 m.
 - The gaze screen offers at most 4 well-separated objects (a rule left from the flicker design). On the hall
   frame it offered the three chairs and not the couches behind them.
 - Gemini misses things. In test runs it missed plants, a side table or a coffee table in some answers, so
@@ -144,4 +165,4 @@ def plan(shape, tracks, target, advice, view) -> tuple[Route | None, bool]   # r
   15 degrees on the chair to see floor from about 1 m.
 - The colour floor can be fooled by a wall or table the same colour as the floor, a patterned floor, or a
   hard shadow. On the hall frame it leaked onto a grey coffee table; Gemini's no-go box covered that.
-- Example render (real frame of the hall, couch chosen): `docs/img/route_preview_design.jpg`.
+- Example render (real frame of the hall, couch chosen, route refused): `docs/img/route_preview_design.jpg`.

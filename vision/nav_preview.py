@@ -11,7 +11,8 @@ real gaze screen). Click STOP or press S to clear the destination. Q / ESC quits
 How the route is made (rules in docs/ROUTE_REQUIREMENTS.md): objects come from the segmentation model, floor
 is found by its colour, extra no-go zones come from Gemini in the background, and the route is planned locally
 on what is left.
-The existing drive planner's command is only logged; the on-screen route is not yet the route the chair drives.
+The bottom bar shows what the route follower (control/follow.py) would tell the wheels. To really drive along
+the route: python -m vision.object_select --drive --follow route (humans only, wheels up first).
 """
 
 from __future__ import annotations
@@ -26,27 +27,21 @@ from collections.abc import Sequence
 import cv2
 import numpy as np
 
-from control.goto import NavState, nav_step
-from control.navigation import NavConfig
+from control.follow import follow_step
+from control.navigation import NavConfig, to_wheels
 from shared.protocol import DWELL_S
 from vision import hud
 from vision.detect_track import DEFAULT_MODEL, SEG_MODEL, Track, detect, focal_length_px, load_hfov, relevant_class_ids
 from vision.floor_route import Route
 from vision.object_select import Selection, dwell_fraction, hit_boxes, update_selection
-from vision.route_scene import cursor_hit, floor_view, plan
+from vision.route_scene import CAM_HEIGHT_M, CAM_PITCH_DEG, RIBBON_DISPLAY_SCALE, cursor_hit, floor_metres, floor_view, plan
 from vision.scene_ai import SceneAdvisor, advice_valid, make_client
 
 log = logging.getLogger("vision.nav_preview")
 
 DEAD_ZONE = 10  # firmware speed units below this count as "stopped" (the board ignores |speed| < 50 anyway)
 VIEW_W = 1280  # the camera frame is resized to this width before detection and drawing
-# Phone lens height above the floor and downward tilt. Measured Sat Nov 14 on the table set-up: 35 in, level.
-# Re-measure once the phone is mounted on the chair, or pass --cam-height / --cam-pitch.
-CAM_HEIGHT_M, CAM_PITCH_DEG = 0.89, 0.0
 FLOW_GAPS_S = 1.5  # chevrons move this many gaps per second toward the target (hud phase: 1.0 = one gap)
-# The planner keeps the whole chair width clear; the ribbon on screen is a thinner path marker (a full-width
-# ribbon covers most of the visible floor). Drawing only: clearance is still checked at full width.
-RIBBON_DISPLAY_SCALE = 0.3
 WINDOW = "Xavier route preview"
 QUIT_KEYS, STOP_KEYS = (27, ord("q")), (ord("s"), ord(" "))
 
@@ -62,15 +57,18 @@ def direction_label(left: int, right: int) -> str:
     return "FORWARD + RIGHT" if left > right else "FORWARD + LEFT"
 
 
-def status_line(target: Track | None, route: Route | None, verified: bool, ai_status: str) -> str:
+def status_line(target: Track | None, route: Route | None, verified: bool, ai_status: str,
+                command: str = "") -> str:
+    """Bottom-bar text. `command` = what the route follower would tell the wheels right now (words)."""
+    would = f" · would drive: {command}" if command else ""
     if target is None:
         return "Stopped · Rest the cursor on an object to choose it"
     if route is None:
         return f"Stopped · No safe route to the {target.label}"
     if verified:
-        return f"Stopped · Route to the {target.label} · Gemini-checked floor · Awaiting confirmation"
+        return f"Stopped · Route to the {target.label} · Gemini-checked floor{would}"
     waiting = "checking the floor with Gemini" if ai_status == "analysing" else "local floor estimate"
-    return f"Stopped · Route to the {target.label} is unverified ({waiting})"
+    return f"Stopped · Route to the {target.label} is unverified ({waiting}){would}"
 
 
 def hud_state(tracks: Sequence[Track], sel: Selection, cursor, route: Route | None, verified: bool, status: str,
@@ -130,7 +128,7 @@ def run(reader, model, classes, hfov: float, seconds: float | None, cam_h: float
         advisor: SceneAdvisor | None = None, fixed_cursor: tuple[float, float] | None = None,
         show: bool = True) -> np.ndarray | None:
     """Main loop. Returns the last rendered screen (None if no frame ever arrived)."""
-    cfg, nav, sel, mouse = NavConfig(), NavState(), Selection(), Mouse()
+    cfg, sel, mouse = NavConfig(), Selection(), Mouse()
     last_t, last_log, screen, start = None, 0.0, None, time.monotonic()
     if show:
         cv2.namedWindow(WINDOW)
@@ -156,26 +154,27 @@ def run(reader, model, classes, hfov: float, seconds: float | None, cam_h: float
         advice = advisor.latest() if advisor is not None else None
         if advice is not None and not advice_valid(advice, frame, now):
             advice = None  # the view changed or the answer is old: do not trust it (C6)
-        route, verified, wheels, arrived = None, False, (0, 0), False
+        route, verified, wheels, command = None, False, (0, 0), ""
         if target is not None:
             if advisor is not None and (advice is None or advice.target_id != target.id):
                 advisor.submit(frame, now, target.id, target.label, target.bbox)  # never blocks; rate-limited inside
-            route, verified = plan(frame, tracks, target, advice, floor_view(w, h, hfov, cam_h, pitch))
-            nav, wheels, arrived = nav_step(nav, target, tracks, w, hfov, distance_cm=None, cfg=cfg)
-        else:
-            nav = NavState()
+            view = floor_view(w, h, hfov, cam_h, pitch)
+            route, verified = plan(frame, tracks, target, advice, view)
+            # What the chair would do to follow this route (the same follower object_select --follow route uses).
+            (speed, turn), arrived = follow_step(None if route is None else floor_metres(route.points, view), cfg)
+            wheels = to_wheels(speed, turn, cfg)
+            command = "ARRIVED" if arrived else direction_label(*wheels) if route is not None else ""
         ai_status = advisor.status() if advisor is not None else "off"
-        status = status_line(target, route, verified, ai_status)
+        status = status_line(target, route, verified, ai_status, command)
         screen = hud.render(frame, hud_state(tracks, sel, cursor, route, verified, status, now))
         if show:
             cv2.imshow(WINDOW, screen)
         if now - last_log >= 1.0:
             last_log = now
-            command = "NO TARGET" if target is None else "ARRIVED" if arrived else direction_label(*wheels)
-            log.info("objects=%d target=%s route=%s floor=%s gemini=%s | drive planner: %s (left %+d, right %+d)",
+            log.info("objects=%d target=%s route=%s floor=%s gemini=%s | route follower: %s (left %+d, right %+d)",
                      len(tracks), "none" if target is None else target.label,
                      "none" if route is None else f"{len(route.points)} pts",
-                     "gemini" if verified else "local", ai_status, command, *wheels)
+                     "gemini" if verified else "local", ai_status, command or "NO ROUTE", *wheels)
     return screen
 
 

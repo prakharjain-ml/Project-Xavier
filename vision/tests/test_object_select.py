@@ -368,7 +368,8 @@ class DriveSession:
         return sum(word in message for message in self.log)
 
 
-def run_drive_session(monkeypatch, tracks: list[Track], script, confirm_mode: str = "key") -> DriveSession:
+def run_drive_session(monkeypatch, tracks: list[Track], script, confirm_mode: str = "key",
+                      **run_options) -> DriveSession:
     """Run the real osel.run() with a MotorDriver on MockSerial. `script(session)` is a generator: every value it
     yields is the key pressed in one loop pass; when it ends, Q is pressed and the session closes."""
     import cv2 as real_cv2
@@ -407,7 +408,7 @@ def run_drive_session(monkeypatch, tracks: list[Track], script, confirm_mode: st
     try:
         session.confirmations = osel.run(fake_cv2, session, model=None, classes=None, gaze_queue=session,
                                          hfov=85.5, device="cpu", seconds=4 * WAIT_CAP_S,
-                                         confirm_mode=confirm_mode, driver=driver)
+                                         confirm_mode=confirm_mode, driver=driver, **run_options)
     finally:
         driver.stop()
         osel.log.removeHandler(handler)
@@ -720,3 +721,61 @@ def test_draw_returns_the_full_screen_with_bars_and_leaves_the_frame_and_tracks_
     assert screen.shape == (CANVAS_H, CANVAS_W, 3)
     assert not np.array_equal(screen, idle)  # the looked-at object and the cursor are drawn differently
     assert np.array_equal(frame, before_frame) and np.array_equal(outline, before_outline)
+
+
+def wheel_speeds(line: str) -> tuple[int, int]:
+    left, right = line.split(",")[2:]
+    return int(left), int(right)
+
+
+def test_route_mode_drives_the_chair_along_the_planned_route(monkeypatch):
+    """--follow route: the wheels are driven by the route follower. The floor is open and the chair is dead
+    ahead, so the planned route is a straight line and both wheels must run forward at the same speed."""
+    def script(s: DriveSession):
+        yield from confirm_with_j_then_hold_until_moving(s)
+        yield from s.wait(1.0)
+
+    s = run_drive_session(monkeypatch, [CHAIR], script, follow="route")
+
+    moving = [wheel_speeds(line) for line in s.moving_lines()]
+    assert moving, "the chair never moved along the route"
+    assert all(left > 0 and right > 0 for left, right in moving)  # forward only, never a spin or a reverse
+    assert all(abs(left - right) <= 16 for left, right in moving)  # straight (each wheel ramps by 8 per line)
+    assert not any("no safe route" in status for _t, status in s.statuses)
+
+
+def test_route_mode_keeps_the_chair_still_when_no_route_is_safe(monkeypatch):
+    """--follow route with something right across the floor between the chair and the object: there is no
+    route, so nothing may move, however long the rider holds the gaze. The screen says why."""
+    import vision.object_select as osel
+
+    barrier = Track(id=9, label="couch", conf=0.9, bbox=(0, 850, FRAME_W - 1, 1000), distance_m=2.0)
+    # The barrier overlaps the chair sideways, and the selection rule only offers well-separated objects. Offer
+    # just the chair, so the barrier is purely an obstacle (it is still in the tracks the route is planned on).
+    monkeypatch.setattr(osel, "separate_targets", lambda ranked, _w, _n: [t for t in ranked if t.id == CHAIR.id])
+
+    def script(s: DriveSession):
+        yield from s.wait(MIN_LOOK_S + 0.2)
+        yield from s.until(lambda: s.logged("CONFIRMED"), "the J key to confirm the chair", key=ord("j"))
+        yield from s.wait(DWELL_S + 1.0)  # hold well past the 1.5 s that would normally start the drive
+
+    s = run_drive_session(monkeypatch, [CHAIR, barrier], script, follow="route")
+
+    assert s.moving_lines() == []
+    assert any("no safe route" in status for _t, status in s.statuses)
+
+
+def test_direct_mode_is_still_the_default_and_ignores_routes(monkeypatch):
+    """Without --follow route nothing changes: the same barrier does not stop the old planner from proposing
+    motion (it steers around boxes its own way). This pins that route mode is opt-in."""
+    import vision.object_select as osel
+
+    calls = []
+    monkeypatch.setattr(osel, "plan_for_drive", lambda *a, **k: calls.append(1) or (None, None))
+
+    def script(s: DriveSession):
+        yield from confirm_with_j_then_hold_until_moving(s)
+
+    s = run_drive_session(monkeypatch, [CHAIR], script)
+
+    assert s.is_moving() and calls == []  # drove, and never planned a route

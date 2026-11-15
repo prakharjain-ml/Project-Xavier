@@ -52,6 +52,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## control/ (owner: Prakhar design, Pratosh integration)
+### Sat Nov 14, ~7:34 PM - Claude Code (Fable 5.2), for Prakhar (route following)
+- Done: `control/follow.py`: pure pursuit on a route given in metres in the chair's frame. Look-ahead 0.6 m, eases off in bends and over the last metre, turns on the spot when the route is far to the side, never reverses, stop when less than 0.5 m of route is left. No route or a broken route gives (0, 0).
+- Evidence: `python -m pytest -q control/tests/test_follow.py` -> 7 passed, including a closed-loop run around a 0.8 m detour (ideal chair, re-planned every step): worst distance off the route 8.4 cm, arrived in 15 s. Look-ahead sweep: 6.5 cm at 0.5 m, 8.4 cm at 0.6 m, 15.6 cm at 0.9 m.
+- Never run on the chair. Real latency (camera, loop, motors) will make it wobble more than the simulation; if it weaves, raise `lookahead_m`.
+
 ### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes: arrival, dead band)
 - Done: `nav_step(..., frame_h=...)` now reports ARRIVED when the camera can no longer measure the target getting closer: its box fills 90% of the frame height, or is cut off by the bottom edge and reads 2.5 m or less. A cut-off box reading farther is a stop without arrival. Before, the estimate could never drop below 0.87 m (chair), 0.72 m (table) or 1.63 m (person) against `ARRIVE_M` 0.7 m, and the simulated chair drove into all three. `to_wheels()` keeps every non-zero command at or above the board's dead band (`WHEEL_DEAD_BAND = 50`); the spin was (-49, 49) before.
 - Changes behaviour, check on the floor: (1) the chair now stops where the target's foot leaves the picture, about 1.1 to 2.0 m away depending on camera height and tilt, not 0.7 m. A steeper downward tilt brings it closer. (2) Turn-in-place now really moves the wheels (about 41 deg/s). It has never run on hardware. (3) `WHEEL_DEAD_BAND = 50` comes from a comment in `bridge.ino`, not a measurement: send 45 then 55 to a wheel to check.
@@ -117,6 +122,13 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sat Nov 14, ~7:34 PM - Claude Code (Fable 5.2), for Prakhar (chair follows the route: `object_select --drive --follow route`)
+- Done: in route mode the drive screen plans the route to the chosen object on every camera frame (37 ms at 1920 x 1080), draws it (dashed: local floor only), converts it to metres and hands it to the follower. Default is still `--follow direct` (the older planner). New options `--cam-height`, `--cam-pitch`. The preview's bottom bar now shows what the follower would tell the wheels ("would drive: FORWARD + RIGHT").
+- New safety rule C13 (blind strip): an object that runs off the bottom of the picture has its foot in floor the camera cannot see. The route's first point must be far enough to the side of it, or there is no route. Found by checking the hall frame in metres: the route started 1.8 m ahead and 0.56 m right, and the straight run to it passed where the middle chair stands (1.4 m ahead).
+- Consequence: both test scenes (hall frame, lounge photo) now give "No safe route". The chairs are 1.4 m away with about 0.9 m between them. To get a route: tilt the phone down about 20 degrees (nearest visible floor about 0.8 m instead of 1.75 m) and keep about 0.5 m clear to each side of the way in.
+- Evidence: `python -m pytest -q` -> `571 passed`. End-to-end on a mock port: open floor -> both wheels forward and equal; a barrier across the floor -> no drive lines and "no safe route" on screen; mutation (fall back to the old planner when there is no route) fails that test.
+- Docs: `docs/VIDEO_SCRIPT.md` (2-minute video, shot by shot, with fallbacks) and `docs/RUN_OF_SHOW.md` (hour-by-hour to the 10 am demo, three decisions for tonight).
+
 ### Sat Nov 14, ~6:45 PM - Claude Code (Fable 5.2) with subagents, for Prakhar (audit fixes in `object_select --drive`, colour floor, better detector)
 - Done (`vision/object_select.py`): a frozen forward camera now stops the chair (the Intent carries the frame's arrival time, so the state machine's 0.5 s stale rule fires; before, 87 drive lines went out on a frozen picture). SPACE = latched emergency stop, R = re-arm, X = cancel in every confirm mode (the same object cannot be re-chosen until the gaze leaves it). Arrival is reported once. The planner gets every tracked object as an obstacle, not only the 4 boxes on screen. The session ends if the jaw reader thread dies.
 - Done (route preview): the floor is now found by colour (`vision/floor_seg.py`); Gemini's floor outline was too rough (a bottom strip on the hall frame) so Gemini only adds no-go zones for things the detector misses. Detector switched to `yolo11s-seg` (both hall couches at 0.70 / 0.62 confidence vs 0.42 / 0.39 with the smallest model; 27 ms vs 20 ms a frame). Example on a real hall frame: `docs/img/route_preview_design.jpg`.

@@ -83,7 +83,7 @@ def test_route_without_gemini_is_marked_unverified():
 def test_route_on_gemini_floor_is_verified_and_stays_off_detected_objects():
     from vision.route_scene import plan, track_mask
 
-    target, blocker = make_track(1, (280, 130, 360, 200)), make_track(2, (200, 230, 440, 270), "couch")
+    target, blocker = make_track(1, (280, 130, 360, 200)), make_track(2, (250, 230, 390, 270), "couch")
     advice = make_advice([whole_floor()])  # Gemini wrongly calls everything floor, including under the couch
     route, verified = plan(FRAME, [target, blocker], target, advice, make_view())
     assert route is not None and verified is True
@@ -221,3 +221,60 @@ def test_gemini_box_around_a_detected_object_is_dropped_but_one_around_an_unknow
     gemini = [("chair", box(95, 190, 210, 335)), ("table", box(420, 220, 520, 300)), ("armchair", box(270, 120, 370, 210))]
     kept = extra_no_go(gemini, [target, chair], target)
     assert len(kept) == 1 and kept[0][0, 0] == 420  # only the table, which the detector did not find
+
+
+def test_route_in_metres_matches_the_floor_points_it_was_drawn_on():
+    from vision.floor import project_floor
+    from vision.route_scene import floor_metres
+
+    view = make_view()
+    metres = np.array([[1.5, 0.0], [2.5, 0.6], [4.0, -1.0]])  # (forward, left) in the chair's frame
+    pixels = project_floor(metres, SHAPE[1], SHAPE[0], 85.5, 0.89, 10.0)
+    assert np.allclose(floor_metres(pixels, view), metres, atol=0.03)
+
+
+def test_planned_route_in_metres_starts_ahead_of_the_chair_and_ends_short_of_the_target():
+    from vision.route_scene import floor_metres, plan
+
+    target = make_track(1, (280, 130, 360, 200))
+    view = make_view()
+    route, _ = plan(FRAME, [target], target, None, view)
+    metres = floor_metres(route.points, view)
+    assert len(metres) == len(route.points)
+    assert metres[0, 0] == pytest.approx(view.near_m, abs=0.15)  # starts at the nearest floor the camera sees
+    assert metres[-1, 0] > metres[0, 0] and abs(metres[-1, 1]) < 0.5  # ends farther ahead, target is dead ahead
+
+
+def test_status_line_adds_what_the_follower_would_do():
+    from vision.floor_route import Route
+    from vision.nav_preview import status_line
+
+    target = make_track(1, (280, 130, 360, 200))
+    route = Route(points=np.zeros((2, 2)), half_width_px=np.ones(2), via_gemini=False)
+    assert status_line(target, route, True, "ready", "FORWARD + LEFT").endswith("would drive: FORWARD + LEFT")
+    assert "would drive" not in status_line(target, None, True, "ready", "")
+
+
+def test_gap_needed_beside_a_cut_off_object_grows_with_how_far_away_the_nearest_visible_floor_is():
+    from vision.route_scene import BLIND_MIN_M, blind_strip_clear
+
+    chair_span = [(0.3, 0.9)]  # an object reaching from 0.3 m to 0.9 m left of centre at the nearest visible floor
+    half_width = 0.38
+    # Level camera: nearest visible floor 1.75 m away -> needs 0.38 * 1.75 / 0.6 = 1.11 m of gap.
+    assert not blind_strip_clear(-0.5, chair_span, near_m=1.75, half_width_m=half_width)  # only 0.8 m away
+    assert blind_strip_clear(-0.9, chair_span, near_m=1.75, half_width_m=half_width)  # 1.2 m away
+    # Camera tilted down: nearest visible floor 0.82 m away -> needs only 0.52 m, so the same start passes.
+    assert blind_strip_clear(-0.5, chair_span, near_m=0.82, half_width_m=half_width)
+    assert blind_strip_clear(0.0, [], near_m=1.75, half_width_m=half_width)  # nothing cut off: always clear
+    assert BLIND_MIN_M > 0
+
+
+def test_no_route_when_an_object_running_off_the_bottom_of_the_picture_stands_beside_the_way_in():
+    from vision.route_scene import plan
+
+    target = make_track(1, (280, 130, 360, 200))
+    near_chair = make_track(2, (430, 250, 560, 359), "chair")  # its foot is below the picture, just right of centre
+    open_route, _ = plan(FRAME, [target], target, None, make_view())
+    blocked, _ = plan(FRAME, [target, near_chair], target, None, make_view())
+    assert open_route is not None
+    assert blocked is None  # the chair would have to pass through floor it cannot see, right beside that object

@@ -26,7 +26,9 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from control.follow import follow_step
 from control.goto import NavState, nav_step
+from control.navigation import to_wheels
 from control.state_machine import ControlInputs, ControllerState, step
 from shared.latest import drain_newest
 from shared.protocol import DWELL_S, STALE_INTENT_S, Intent, State, StopRequest, StopSource, Target
@@ -44,6 +46,15 @@ from vision.detect_track import (
     steering_offset,
 )
 from vision import hud
+from vision.floor_route import Route
+from vision.route_scene import (
+    CAM_HEIGHT_M,
+    CAM_PITCH_DEG,
+    RIBBON_DISPLAY_SCALE,
+    floor_metres,
+    floor_view,
+    plan,
+)
 from vision.destinations import iou
 from vision.gaze import GazeSample, pick_region
 
@@ -199,7 +210,8 @@ def to_view_point(point: tuple[float, float] | None) -> tuple[float, float] | No
 
 
 def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selection, point, now: float,
-         status: str, dwell_s: float | None = DWELL_S, mode: str = "Choose a destination") -> np.ndarray:
+         status: str, dwell_s: float | None = DWELL_S, mode: str = "Choose a destination",
+         route: Route | None = None) -> np.ndarray:
     """The screen: camera picture with each selectable object outlined, the gaze cursor, and the status bars.
     `point` is the gaze as a fraction of the camera picture (see to_view_point). Returns CANVAS_H x CANVAS_W."""
     view = cv2.resize(frame, (CANVAS_W, VIEW_H))
@@ -224,13 +236,36 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
     cv2.line(view, (cx - 15, cy), (cx + 15, cy), GREY, 2)
     cv2.line(view, (cx, cy - 15), (cx, cy + 15), GREY, 2)
     cursor = None if point is None else (point[0] * CANVAS_W, point[1] * VIEW_H)
-    return hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status))
+    # The route the chair would follow (--follow route). Dashed: it is planned on the local floor estimate and
+    # the detector's outlines only; Gemini's no-go check does not run while the chair may be moving.
+    route_points = None if route is None else route.points * (sx, sy)
+    route_width = None if route is None else route.half_width_px * sx * RIBBON_DISPLAY_SCALE
+    return hud.render(view, hud.HudState(objects=tuple(objects), cursor=cursor, mode=mode, status=status,
+                                         route_points=route_points, route_half_width=route_width,
+                                         route_verified=False))
+
+
+def plan_for_drive(frame: np.ndarray, tracks: list[Track], target: Track, hfov: float, cam_h: float,
+                   cam_pitch: float) -> tuple[Route | None, np.ndarray | None]:
+    """The route to the target as seen in this camera frame: (in image pixels, for drawing; in metres in the
+    chair's frame, for the follower). Any failure gives (None, None), and no route means the chair stays put."""
+    try:
+        view = floor_view(frame.shape[1], frame.shape[0], hfov, cam_h, cam_pitch)
+        route, _ = plan(frame, tracks, target, None, view)
+        return (route, floor_metres(route.points, view)) if route is not None else (None, None)
+    except Exception:
+        log.exception("route planning failed: no route, the chair stays stopped")
+        return None, None
 
 
 def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, seconds: float | None,
-        tracker_alive=lambda: True, confirm_mode: str = "dwell", jaw=None, driver=None) -> list[str]:
+        tracker_alive=lambda: True, confirm_mode: str = "dwell", jaw=None, driver=None,
+        follow: str = "direct", cam_h: float = CAM_HEIGHT_M, cam_pitch: float = CAM_PITCH_DEG) -> list[str]:
+    """follow = "direct": the planner steers straight at the object (control/goto.py). follow = "route": the
+    chair follows the shortest safe route planned on the floor in each camera frame (control/follow.py)."""
     dwell_s = confirm_settings(confirm_mode)
     ctrl, nav, drive_note = ControllerState(), NavState(), ""
+    planned_for, route, route_m = None, None, None  # which (frame, destination) the current route was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
     first_seen: dict[int, float] = {}
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
@@ -281,12 +316,18 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                     f"{steering_offset(chosen.bbox, frame.shape[1]):+.2f} (by {how})")
             log.info(line)
             confirmations.append(line)
+        if follow == "route" and (last_t, sel.confirmed) != planned_for:  # new camera frame or new destination
+            planned_for, route, route_m = (last_t, sel.confirmed), None, None
+            chosen = next((t for t in targets if t.id == sel.confirmed), None)
+            if chosen is not None:
+                route, route_m = plan_for_drive(frame, tracks, chosen, hfov, cam_h, cam_pitch)
         if driver is not None:
             # SPACE -> a StopRequest for the state machine (latched E_STOP), R -> re-arm, exactly as in app.py.
             stops = (StopRequest(StopSource.OPERATOR, now),) if key == STOP_KEY else ()
             sel, ctrl, nav, drive_note = drive_tick(sel, hit, targets, frame.shape[1], hfov, driver, ctrl, nav, now,
                                                     confirmations, obstacles=tracks, frame_h=frame.shape[0],
-                                                    frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY)
+                                                    frame_t=last_t, stop_requests=stops, rearm=key == REARM_KEY,
+                                                    follow=follow, route_m=route_m)
         total_frames += 1
         gaze_frames += point is not None
         # last_t is when the newest camera frame arrived; a frozen camera keeps returning that same old frame.
@@ -294,7 +335,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
         if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
             status = drive_note.strip(" |") + "  |  " + status
         mode = "Drive to object" if driver is not None else "Choose a destination"
-        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, view_point, now, status, dwell_s, mode))
+        cv2.imshow(WINDOW, draw(cv2, frame, targets, boxes, sel, view_point, now, status, dwell_s, mode, route))
     log.info("gaze available in %.0f%% of frames", 100 * gaze_frames / max(total_frames, 1))
     lost = ", ".join(f"{name}={100 * n / max(total_frames, 1):.0f}%" for name, n in problems.items() if name)
     log.info("gaze lost because: %s", lost or "never lost")
@@ -303,7 +344,8 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
 
 def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: float, driver, ctrl: ControllerState,
                nav: NavState, now: float, log_lines: list[str], *, obstacles: Sequence[Track], frame_h: int,
-               frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False):
+               frame_t: float, stop_requests: tuple[StopRequest, ...] = (), rearm: bool = False,
+               follow: str = "direct", route_m: np.ndarray | None = None):
     """One drive step: planner proposes wheel speeds toward the confirmed object, the safety state machine decides
     whether the chair may move (hold-to-move, 1.5 s hold, obstacle block, stop by default), the driver sends it.
 
@@ -312,10 +354,16 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
     operator's SPACE / R keys for this step.
     """
     target = next((t for t in targets if t.id == sel.confirmed), None)
-    wheels = (0, 0)
+    wheels, no_route = (0, 0), False
     if target is not None:
         extra = {"frame_h": frame_h} if NAV_STEP_TAKES_FRAME_H else {}
         nav, wheels, arrived = nav_step(nav, target, obstacles, frame_w, hfov, driver.distance_cm(), **extra)
+        if follow == "route" and not arrived:
+            # Route mode: nav_step above is kept only for its arrival rule (the object's foot has left the
+            # picture). The wheel speeds come from following the planned route. No route this frame (route_m is
+            # None) gives (0, 0): the chair never moves on a guess.
+            (speed, turn), arrived = follow_step(route_m)
+            wheels, no_route = to_wheels(speed, turn), route_m is None
         if arrived:
             line = f"ARRIVED at {target.label} #{target.id}"
             log.info(line)
@@ -338,6 +386,8 @@ def drive_tick(sel: Selection, hit, targets: list[Track], frame_w: int, hfov: fl
     if ctrl.state != before:
         log.info("state %s -> %s", before.value, ctrl.state.value)
     note = f"  |  {ctrl.state.value}" + ("" if command.stop else f" wheels {command.left},{command.right}")
+    if target is not None and follow == "route" and no_route:
+        note += " (no safe route)"
     if ctrl.state == State.E_STOP:  # latched: only the operator's R key releases it
         note += " (emergency stop: press R to re-arm)"
     return sel, ctrl, nav, note
@@ -411,6 +461,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--jaw-port", default=None, help="OpenBCI dongle port, e.g. /dev/cu.usbserial-DM0xxxxx")
     parser.add_argument("--jaw-channels", default="1", help="Cyton channels with an electrode, e.g. 1 or 1,2")
     parser.add_argument("--drive", action="store_true", help="drive to the confirmed object (needs --mock or --serial)")
+    parser.add_argument("--follow", choices=("direct", "route"), default="direct",
+                        help="direct = steer straight at the object; route = follow the shortest safe route on the floor")
+    parser.add_argument("--cam-height", type=float, default=CAM_HEIGHT_M, help="forward camera height above floor (m)")
+    parser.add_argument("--cam-pitch", type=float, default=CAM_PITCH_DEG, help="forward camera tilt down (degrees)")
     port = parser.add_mutually_exclusive_group()
     port.add_argument("--mock", action="store_true", help="--drive into a fake serial port (no hardware)")
     port.add_argument("--serial", metavar="PORT", help="--drive: ESP32 bridge port (HUMANS ONLY, wheels up first)")
@@ -481,7 +535,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
         confirmations = run(cv2, reader, model, relevant_class_ids(model.names), gaze_queue, args.hfov, args.device,
                             args.seconds, tracker_alive=lambda: process.poll() is None, confirm_mode=args.confirm,
-                            jaw=jaw, driver=driver)
+                            jaw=jaw, driver=driver, follow=args.follow, cam_h=args.cam_height,
+                            cam_pitch=args.cam_pitch)
     finally:
         if driver is not None:
             driver.stop()  # final explicit STOP lines

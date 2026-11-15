@@ -74,6 +74,8 @@ MIN_LOOK_S = 0.3  # gaze must rest on a box this long before a clench / key conf
 # Look for objects this often. Furniture does not move and the chair is slow, so 7 times a second is plenty,
 # and well inside the 0.5 s limit after which a camera frame counts as stale.
 DETECT_PERIOD_S = 0.15
+SESSION_LOG_DIR = "data/raw/sessions"  # one log file per run (data/raw is gitignored)
+JAW_METER_BLOCKS = 10  # status-bar clench meter: all blocks lit = at the rider's threshold
 STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
@@ -163,7 +165,10 @@ def confirm_event(mode: str, key: int, jaw) -> bool:
     if mode == "jaw" and jaw is not None:
         if key == CONFIRM_KEY and jaw.mode == "synthetic":
             jaw.inject_fake_clench()
-        return jaw.take()
+        fired = jaw.take()
+        if fired:  # logged whether or not the gaze is on an object, so a session can be checked afterwards
+            log.info("JAW CLENCH detected")
+        return fired
     return False
 
 
@@ -205,6 +210,14 @@ def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look
     return f"{how} to confirm  |  {keys}"
 
 
+def jaw_meter(level: float | None) -> str:
+    """Live clench level for the status bar: ten blocks, full at this rider's threshold."""
+    if level is None:
+        return "JAW: no signal"
+    filled = max(0, min(JAW_METER_BLOCKS, round(level * JAW_METER_BLOCKS)))
+    return "JAW " + "■" * filled + "□" * (JAW_METER_BLOCKS - filled) + (" CLENCH" if level >= 1.0 else "")
+
+
 def to_view_point(point: tuple[float, float] | None) -> tuple[float, float] | None:
     """Gaze point as a fraction of the whole screen -> fraction of the camera picture.
 
@@ -238,7 +251,7 @@ def draw(cv2, frame: np.ndarray, targets: list[Track], boxes: dict, sel: Selecti
         x1, y1, x2, y2 = t.bbox
         outline = None if t.outline is None else t.outline * (sx, sy)  # a new array: the track is left alone
         objects.append(hud.SceneObject(t.label, (x1 * sx, y1 * sy, x2 * sx, y2 * sy), outline,
-                                       confirmed or candidate, progress))
+                                       confirmed or candidate, progress, confirmed))
     # The "+" the rider looks at to re-centre (C key) marks the middle of the SCREEN, not of the picture.
     cx, cy = CANVAS_W // 2, CANVAS_H // 2 - hud.TOP_BAR_H
     cv2.line(view, (cx - 15, cy), (cx + 15, cy), GREY, 2)
@@ -364,6 +377,11 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             status = status_line(confirm_mode, point is not None, now - last_t, sel.must_look_away, driver is not None)
             if drive_note:  # chair state first: the bar cuts long text off at the right, and the key hints can go
                 status = drive_note.strip(" |") + "  |  " + status
+            chosen = next((t for t in targets if t.id == sel.confirmed), None)
+            if chosen is not None:
+                status = f"DESTINATION: {chosen.label}  |  " + status
+            if confirm_mode == "jaw" and jaw is not None:
+                status = jaw_meter(jaw.level()) + "  |  " + status
             mode = "Drive to object" if driver is not None else "Choose a destination"
             screen_frame = shown if shown is not None and shown.shape == frame.shape else frame
             drawn_tracks = glide_tracks(drawn_tracks, targets)  # outlines glide between detections instead of jumping
@@ -492,8 +510,17 @@ def calibrate_now(cv2, eye_camera: int, out: str) -> bool:
         cv2.destroyAllWindows()
 
 
+def session_log_path() -> str:
+    """Every run writes its log here (gitignored), so a session can be checked afterwards."""
+    return os.path.join(SESSION_LOG_DIR, time.strftime("%Y-%m-%d_%H-%M-%S") + ".log")
+
+
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    log_path = session_log_path()
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=[logging.StreamHandler(), logging.FileHandler(log_path)])
+    log.info("session log: %s", log_path)
     parser = argparse.ArgumentParser(description="Choose a real object by looking at it.")
     parser.add_argument("--source", default="auto", help="forward camera index/URL, or auto (= not the face camera)")
     parser.add_argument("--eye-camera", default="auto", help="camera that sees the rider's face, or auto")

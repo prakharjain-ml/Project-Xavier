@@ -871,3 +871,27 @@ def test_scene_worker_that_crashes_reports_itself_dead():
         time.sleep(0.01)
     worker.stop()
     assert not worker.alive() and isinstance(worker.error, RuntimeError)
+
+
+def test_jaw_meter_fills_up_to_the_threshold_and_says_clench_above_it():
+    from vision.object_select import jaw_meter
+
+    assert jaw_meter(None) == "JAW: no signal"
+    assert jaw_meter(0.0).count("■") == 0 and "CLENCH" not in jaw_meter(0.5)
+    assert jaw_meter(0.5).count("■") == 5
+    assert jaw_meter(1.4).count("■") == 10 and jaw_meter(1.4).endswith("CLENCH")
+
+
+def test_confirmed_destination_is_drawn_differently_from_an_object_only_looked_at():
+    import cv2
+    import numpy as np
+
+    from vision.object_select import draw
+
+    frame = np.full((1080, 1920, 3), 90, np.uint8)
+    outline = np.array([[860, 300], [1060, 300], [1060, 800], [860, 800]], np.float32)
+    chair = Track(id=4, label="chair", conf=0.9, bbox=(860, 300, 1060, 800), distance_m=2.5, outline=outline)
+    looking = draw(cv2, frame, [chair], {}, Selection(candidate=4, since=0.0), None, 0.1, "s")
+    confirmed = draw(cv2, frame, [chair], {}, Selection(candidate=4, since=0.0, confirmed=4), None, 0.1, "s")
+    inside = (slice(350, 420), slice(600, 680))  # inside the chair on the 1280 x 800 screen, away from the reticle
+    assert confirmed[inside].mean() > looking[inside].mean() + 10  # the destination is filled much more strongly

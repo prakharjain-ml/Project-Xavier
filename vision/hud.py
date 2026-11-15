@@ -73,6 +73,7 @@ OUTLINE_PX, SELECTED_OUTLINE_PX = 1, 3
 OUTLINE_STEP_PX = 4.0           # traced shapes are re-sampled to one point every 4 px ...
 OUTLINE_SMOOTH = 5              # ... and averaged over 5 of them, which irons out stair-steps
 OBJECT_FILL_ALPHA = 150         # 0..255 strength of the chosen object's fill
+LOOKED_FILL_ALPHA = 45          # much lighter fill while the object is only being looked at (not yet confirmed)
 BRACKET_FILL_ALPHA = 46         # lighter fill when we only have a box, not the object's real shape
 BRACKET_ARM_FRAC, BRACKET_ARM_MIN, BRACKET_ARM_MAX = 0.18, 8, 28
 RETICLE_FRAC, RETICLE_MIN, RETICLE_MAX = 0.15, 14, 34   # radius = fraction of the object's smaller side
@@ -123,6 +124,7 @@ class SceneObject:
     outline: np.ndarray | None   # (N, 2) polygon; None = fall back to corner brackets on the bbox
     selected: bool = False
     progress: float = 0.0        # confirm progress 0..1, drawn as the reticle arc
+    confirmed: bool = False      # the destination: strong fill and "· destination" on its label. Only looked at: light fill
 
 
 @dataclass(frozen=True)
@@ -470,7 +472,8 @@ def _selected_underlay(tint: np.ndarray, glow: np.ndarray, obj: SceneObject) -> 
         return
     outline = _display_outline(obj)
     if outline is not None:
-        cv2.fillPoly(tint, [_fixed(outline)], OBJECT_FILL_ALPHA, cv2.LINE_AA, SHIFT)
+        cv2.fillPoly(tint, [_fixed(outline)], OBJECT_FILL_ALPHA if obj.confirmed else LOOKED_FILL_ALPHA, cv2.LINE_AA,
+                     SHIFT)
         _polylines(glow, [outline], True, 255, GLOW_STROKE, for_glow=True)
         return
     x1, y1, x2, y2 = obj.bbox
@@ -514,7 +517,8 @@ def _label(view: np.ndarray, obj: SceneObject, centre: tuple[float, float], radi
     """Label pill above the object, a little right of the reticle, with a thin line down to the reticle's rim."""
     h, w = view.shape[:2]
     x1, y1, x2, _ = obj.bbox
-    patch, alpha = _label_pill(obj.label[:1].upper() + obj.label[1:])
+    text = obj.label[:1].upper() + obj.label[1:]
+    patch, alpha = _label_pill(f"{text} · destination" if obj.confirmed else text)
     ph, pw = alpha.shape[:2]
     # Clamp the pill's corner so the whole pill stays inside the frame.
     wanted_x = centre[0] + PILL_SHIFT_FRAC * (x2 - x1) - pw / 2

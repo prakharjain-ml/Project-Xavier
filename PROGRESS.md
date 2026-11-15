@@ -153,6 +153,11 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## vision/ (owner: Vani)
+### Sun Nov 15, ~1:13 AM - Claude Code (Opus 5.5), for Prakhar (can we tell a clench happened?)
+- Prakhar, live: clenched on an object, "it did become filled in" but no route. Two causes: (1) the fill appeared just from looking (looked-at and confirmed looked the same); (2) `./demo.sh jaw` has no `--drive --follow route`, so no route is ever planned in that mode (use `./demo.sh mock`).
+- Fixed: a looked-at object now has a light fill; only the confirmed destination gets the strong fill and "· destination" on its label. Status bar shows `DESTINATION: <object>` and a live jaw meter (10 blocks, full at the rider's threshold, "CLENCH" above it). Every clench is logged ("JAW CLENCH detected"), and every session now writes a log file to `data/raw/sessions/` (gitignored), so a run can be checked afterwards. The past session wrote no file, so it cannot be checked.
+- Evidence: `python -m pytest -q` passes.
+
 ### Sun Nov 15, ~12:40 AM - Claude Code (Opus 5.5), for Prakhar (45+ fps screen, floating chevrons, less cursor lag)
 - Detection and route planning now run on a background thread (`vision/scene_worker.py`); the gaze screen picks up the newest result each pass. Measured with the real detector, a fake 30 fps camera and no window: 189 passes a second (was capped by the 60 ms detection). If the thread dies the session ends; if it stalls, results stop getting newer and the stale-data rule stops the chair.
 - Route shown as floating 3D chevrons along the A* route (Google Maps Live View style; look after Polyfork's "Direction Chevron", CC BY 4.0, credit it on Devpost) with a "Toward chair · 3.2 m" pill (`vision/chevrons.py`, drawn in `vision/hud.py`). Example: `docs/img/chevrons_design.jpg` (hand-made route on the lounge photo).

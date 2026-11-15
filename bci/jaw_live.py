@@ -51,6 +51,7 @@ class JawStream:
         self.threshold: float | None = None
         self.clench_ratio: float | None = None
         self.clench_level: float | None = None  # this rider's typical clench (uV in the muscle band)
+        self.level_ratio: float | None = None  # newest window's muscle level / threshold (None = no good signal)
         self._state, self._t = JawState(), 0.0
 
     def _windows(self, chunk: np.ndarray):
@@ -101,8 +102,10 @@ class JawStream:
                 # Far stronger than this rider's clench: a loose or touched electrode, not muscle.
                 self.signal_problem = f"signal {level / self.clench_level:.0f}x a clench (loose electrode?)"
             if self.signal_problem is not None:  # flat, railed or far too big: it can never confirm
+                self.level_ratio = None
                 self._state = mark_dead(self._state, self._t)
                 continue
+            self.level_ratio = level / self.threshold  # 1.0 = exactly at the threshold; above = clenching
             self._state, hit = update_jaw(self._state, level, self._t, self.threshold)
             if hit:
                 fired.append(self._t)
@@ -206,6 +209,10 @@ class JawConfirmSource:
         """False once the reader thread has died from an error (kept in .error): no clench can confirm any more.
         The UI loop should check this every pass, like it checks that the eye tracker is still running."""
         return self.error is None
+
+    def level(self) -> float | None:
+        """Newest muscle level as a share of this rider's threshold (1.0 = at it), or None when the signal is bad."""
+        return self._stream.level_ratio
 
     def take(self) -> bool:
         """True if at least one clench was confirmed since the last call."""

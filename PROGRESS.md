@@ -44,6 +44,41 @@ sleep, or merge. Write for a reader who has seen nothing: name files and functio
 - Evidence (command + result):
 
 ## interface/ (owner: Prakhar)
+### Sun Nov 15, ~3:50 AM - Claude Code (Opus 5.5), for Prakhar (web app: one browser window, local Python backend)
+- Done: `interface/web/` = FastAPI server on 127.0.0.1:8765 (`server.py`: /api/health, /api/hello, /api/action,
+  /api/take_control, /ws telemetry 15 Hz, /video/forward.mjpg, built page), typed actions (`contracts.py`, pydantic,
+  no command/wheel-speed endpoint), workflow states + legal transitions (`workflow.py`), coordinate contract
+  (`coords.py`: screen fraction -> viewport -> letterboxed video -> frame; fullscreen/zoom/screen change invalidates
+  calibration), session (`session.py`: 20 Hz tick reusing object_select's update_selection / hold_destination /
+  nearest_target / hit_boxes / blink detectors / drive_tick + SceneWorker + plan_for_drive), MockPerception and
+  LivePerception (`perception.py`), latest-only MJPEG (`video.py`), launcher `python -m interface.web`
+  (single instance, waits for health, opens the browser once). React + TS + Vite frontend in
+  `interface/web/frontend` (build in `dist/`, served by Python; `public/vercel.json` for the hosted copy).
+  Xavier.app (tools/build_app.sh) now starts `interface.web`.
+- Motion policy (Prakhar chose "match current object mode", Sun Nov 15): confirm drives at once; drive_tick keeps
+  the remembered box/route through dropouts. Web-only floor added: controlling-tab heartbeat deadline 0.5 s ->
+  STOP + PAUSED; latched E-stop until explicit re-arm (re-arm moves nothing); perception failure / tick exception
+  / end session -> STOP; route follower "arrived" -> STOP + ARRIVED. KNOWN DEVIATION from docs/SAFETY.md (no
+  stale-frame stop, no hold-to-move), same as object mode since 708cb8a.
+- Evidence: `python -m pytest -q` -> 632 passed; `interface/web/tests` -> 25 passed (heartbeat loss, E-stop latch,
+  re-arm no motion, old-session/duplicate/watching-tab actions refused, tick crash stops, wrong-destination route
+  ignored, end session writes `S,` lines to MockSerial, screen change invalidates calibration, letterbox/aspect/dpr
+  transforms). Scripted browser client over real HTTP+WS (before Codex removed practice startup): dwell 1.5 s ->
+  NAVIGATING -> real A* route 1.84 m -> mock wheels 140/210 -> ARRIVED after ~5 s; E-stop -> PAUSED; re-arm ->
+  SELECTING with STOP; end -> SESSION_ENDED. Chrome rendered the drive view (video, canvas overlay, route map).
+  Origin guard: POST from https://evil.example -> 403, from https://projectxavier.vercel.app -> 200.
+- Not done: browser eye calibration (EyeTrax worker over stdin/stdout) and in-browser jaw calibration; live mode
+  currently needs a saved calibration. Vercel deploy needs a human `npx vercel login` first (no CLI auth on this Mac).
+  Hosted page -> loopback works in Chrome only (Safari blocks http://127.0.0.1 from https).
+- Proposed commit: `feat(web): local web app (FastAPI + React) replacing desktop windows, with heartbeat stop`.
+
+### Sun Nov 15 - Codex (real inputs required in web app)
+- Changed `interface/web/frontend/src/screens.tsx`: removed simulated practice startup; session requests use live perception and name Pixel room camera / Mac eye webcam explicitly.
+- Changed `interface/web/server.py:make_perception`: rejects synthetic/mock perception and missing or identical camera selections. Test fixtures can still inject fake inputs; the production factory cannot create them. Motor output remains MockSerial; real input is separate from physical actuation.
+- Evidence: `~/venvs/hp26/bin/python -m pytest -q interface/web/tests` -> 16 passed in 5.72s; `npm run build` in `interface/web/frontend` -> TypeScript and Vite build passed (34 modules, 562ms).
+- Remaining: camera indices are not verified device identities; live camera capture was not exercised. Browser eye calibration handlers and jaw acquisition are still missing from the web session; saved calibration alone does not complete the browser flow. No hardware opened.
+- Proposed commit: `fix(web): require real camera inputs for rider sessions`.
+
 ### Sat Nov 14, ~3:00 am - Claude Code (Opus 5.5), for Prakhar
 - Done: `interface/timing.py` (frame-counted `is_on`, `flicker_schedule` 9/7/5/4, `FrameStats` drop/slow counters) and `interface/flicker.py` (photosensitivity warning -> SPACE, four arrows, static outlines, dwell bars from a latest-only `ControlStatus` queue, E-STOP banner, F toggles stats, `--single 12` for task 2.10, `--fake-status` for 2.8, `--seconds N` prints the timing summary). No cv2, no sleep in the render loop.
 - In progress (file:function, state): none.

@@ -79,9 +79,19 @@ def open_display(windowed: bool) -> tuple[pygame.Surface, bool]:
         return pygame.display.set_mode(size, flags), False
 
 
+def warning_surface(size: tuple[int, int]) -> pygame.Surface:
+    """The photosensitivity warning as a themed card (interface.screens). Same words as WARNING_LINES."""
+    from interface import screens
+
+    body = " ".join(line for line in WARNING_LINES[1:4])
+    bgr = screens.instruction(size[0], size[1], "Photosensitivity warning", body, "alert", "warn",
+                              hints=(("SPACE", "Begin"), ("ESC", "Quit")), section="SSVEP")
+    return pygame.image.frombuffer(bgr[:, :, ::-1].tobytes(), size, "RGB")
+
+
 def show_warning(screen: pygame.Surface, clock: pygame.time.Clock, deadline: float | None) -> bool:
     """Photosensitivity screen. True when SPACE is pressed; False on ESC, window close or deadline."""
-    font = pygame.font.Font(None, max(24, screen.get_height() // 22))
+    card = warning_surface(screen.get_size())  # static: drawn once, re-shown each pass
     while deadline is None or time.monotonic() < deadline:
         for event in pygame.event.get():
             if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE):
@@ -89,12 +99,7 @@ def show_warning(screen: pygame.Surface, clock: pygame.time.Clock, deadline: flo
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 log.info("warning acknowledged: flicker starting")
                 return True
-        screen.fill(BLACK)
-        for row, text in enumerate(WARNING_LINES):
-            color = ESTOP_COLOR if row == 0 else WHITE
-            surface = font.render(text, True, color)
-            y = screen.get_height() // 3 + row * int(font.get_linesize() * 1.3)
-            screen.blit(surface, surface.get_rect(center=(screen.get_width() // 2, y)))
+        screen.blit(card, (0, 0))
         pygame.display.flip()
         clock.tick(30)  # static screen: no need to redraw at 60
     return False

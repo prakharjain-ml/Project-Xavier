@@ -19,6 +19,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from interface import screens, window
 from vision.gaze import (
     ARROW_REGIONS,
     GazeState,
@@ -78,17 +79,16 @@ def _px(point: tuple[float, float]) -> tuple[int, int]:
 
 
 def _show(cv2, img) -> int:
-    cv2.imshow(WINDOW, img)
+    window.show(cv2, WINDOW, img)  # stretched to the real screen size, so dot positions stay screen fractions
     return cv2.waitKey(1) & 0xFF
 
 
 def wait_for_space(cv2, source: FaceLandmarkSource) -> bool:
     while True:
         _, points = source.read()
-        status = "face found" if points is not None else "NO FACE - move into the camera view"
-        img = _canvas(cv2, "Sit as you will on the chair. Keep your head still. Look at each dot.")
-        cv2.putText(img, f"{status}.   SPACE = start   ESC = quit", (40, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-                    (0, 200, 0) if points is not None else (0, 0, 255), 2)
+        img = screens.face_check(CANVAS_W, CANVAS_H, points is not None, None, "Eye calibration",
+                                 "Sit as you will in the chair. Keep your head still and look at each dot.",
+                                 (("SPACE", "Start"), ("ESC", "Quit")))
         key = _show(cv2, img)
         if key == ESC:
             return False
@@ -98,14 +98,17 @@ def wait_for_space(cv2, source: FaceLandmarkSource) -> bool:
 
 def collect_calibration(cv2, source: FaceLandmarkSource):
     samples = []
-    for target in calibration_targets():
+    targets = calibration_targets()
+    for index, target in enumerate(targets):
         start = time.monotonic()
         while (elapsed := time.monotonic() - start) < DOT_S:
             _, points = source.read()
-            img = _canvas(cv2)
-            radius = int(22 - 14 * elapsed / DOT_S)  # shrinking dot pulls the eyes to its centre
-            cv2.circle(img, _px(target), radius, (255, 255, 255), -1)
-            cv2.circle(img, _px(target), 3, (0, 0, 255), -1)
+            radius = 22 - 14 * elapsed / DOT_S  # shrinking dot pulls the eyes to its centre
+            # Same timing as before: the ring fills only once samples are being kept (after DOT_SETTLE_S).
+            capturing = elapsed > DOT_SETTLE_S
+            phase_progress = (elapsed - DOT_SETTLE_S) / (DOT_S - DOT_SETTLE_S) if capturing else elapsed / DOT_SETTLE_S
+            img = screens.calibration_target(CANVAS_W, CANVAS_H, _px(target), "capture" if capturing else "pulse",
+                                             phase_progress, index, len(targets), radius)
             if _show(cv2, img) == ESC:
                 return None
             if elapsed > DOT_SETTLE_S and points is not None:
@@ -121,10 +124,8 @@ def validate(cv2, source: FaceLandmarkSource, cal, points_log: list | None = Non
             _, points = source.read()
             state, sample = gaze_step(points, cal, state, time.monotonic())
             current = pick_region(sample.point, ARROW_REGIONS, current) if sample.point else None
-            img = _canvas(cv2, f"Look at the {name} region")
-            cv2.rectangle(img, _px(box[:2]), _px(box[2:]), (0, 200, 255), 4)
-            if sample.point:
-                cv2.circle(img, _px(sample.point), 12, (0, 255, 0) if current == name else (0, 0, 255), -1)
+            img = screens.region_check(CANVAS_W, CANVAS_H, (*_px(box[:2]), *_px(box[2:])),
+                                       _px(sample.point) if sample.point else None, current == name, name)
             if _show(cv2, img) == ESC:
                 return None
             if elapsed > REGION_SETTLE_S:
@@ -148,8 +149,7 @@ def save_raw(calibration_path: str, raw, points_log) -> None:
 def run_calibration(cv2, source: FaceLandmarkSource, out: str) -> float | None:
     """Full calibration in the current window: wait for SPACE, 9 dots, fit, save, 4-region check.
     Returns overall accuracy (0-1), or None if the rider cancelled or no face was seen."""
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty(WINDOW, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    window.open_fullscreen(cv2, WINDOW)
     if not wait_for_space(cv2, source):
         return None
     raw = collect_calibration(cv2, source)

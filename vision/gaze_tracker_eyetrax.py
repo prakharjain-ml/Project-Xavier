@@ -49,10 +49,12 @@ def resolve_camera(text: str) -> int:
 
 
 def calibrate(camera: int, model_path: str) -> None:
-    from eyetrax import GazeEstimator, run_9_point_calibration
+    from eyetrax import GazeEstimator
+
+    from vision.eyetrax_calibration_ui import run_9_point_calibration  # EyeTrax's procedure, Xavier's look
 
     estimator = GazeEstimator()
-    run_9_point_calibration(estimator, camera_index=camera)  # EyeTrax's own full-screen calibration UI
+    run_9_point_calibration(estimator, camera_index=camera)
     os.makedirs(os.path.dirname(model_path) or ".", exist_ok=True)
     estimator.save_model(model_path)
     log.info("EyeTrax model saved to %s", model_path)

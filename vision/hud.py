@@ -25,20 +25,24 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 # ---- Fonts (macOS). A missing file falls back to Pillow's built-in font, so the screen never crashes over a font.
-AVENIR_NEXT = "/System/Library/Fonts/Avenir Next.ttc"
-DIN_BOLD = "/System/Library/Fonts/Supplemental/DIN Alternate Bold.ttf"
-# face name -> (font file, index of the face inside that file). Avenir Next.ttc: 0 Bold, 2 Demi Bold, 5 Medium.
-FONT_FILES: dict[str, tuple[str, int]] = {"bold": (AVENIR_NEXT, 0), "demi": (AVENIR_NEXT, 2),
-                                          "medium": (AVENIR_NEXT, 5), "num": (DIN_BOLD, 0)}
+# SF Pro, the system face, as on every other screen (interface/theme.py). It is one variable font file, so the
+# second value is a weight name; an int would be the face index inside a .ttc (as with Avenir Next before).
+SF_PRO = "/System/Library/Fonts/SFNS.ttf"
+FONT_FILES: dict[str, tuple[str, int | str]] = {"bold": (SF_PRO, "Bold"), "demi": (SF_PRO, "Semibold"),
+                                                "medium": (SF_PRO, "Medium"), "num": (SF_PRO, "Semibold")}
 
 # ---- Colours as (R, G, B); `_bgr` flips them for OpenCV. Sampled from the team's reference images.
-BAR_RGB = (20, 23, 32)          # near-black navy bars
-PILL_RGB = (24, 26, 33)         # label pill
+BAR_RGB = (18, 24, 33)          # theme SURFACE: the bars
+PILL_RGB = (18, 24, 33)         # label pill (same surface, with a hairline border)
+PILL_BORDER_RGB = (52, 66, 88)  # pill hairline
 WHITE_RGB = (255, 255, 255)
-TITLE_GREY_RGB = (186, 190, 198)   # "CAMERA VIEW"
-STATUS_GREY_RGB = (160, 164, 173)  # status line
-DIVIDER_RGB = (72, 76, 87)
-STOP_RGB = (227, 37, 37)
+TEXT_RGB = (230, 237, 243)      # theme TEXT
+TITLE_GREY_RGB = (139, 152, 169)   # theme MUTED: "CAMERA VIEW"
+STATUS_GREY_RGB = (160, 172, 188)  # status line
+DIVIDER_RGB = (40, 52, 70)      # theme BORDER
+HAIRLINE_RGB = (40, 52, 70)     # 1 px line where a bar meets the camera picture
+SUCCESS_RGB = (16, 185, 129)    # theme SUCCESS: the destination dot on its label
+STOP_RGB = (239, 68, 68)       # theme DANGER: only the STOP button is red
 CYAN_RGB = (8, 232, 248)        # bright lines and glow
 PALE_CYAN_RGB = (118, 226, 238)  # thin outline of objects that are not chosen
 FILL_RGB = (0, 170, 180)        # see-through fill (darker teal than the lines, as in the reference)
@@ -48,9 +52,10 @@ DIM_CYAN_RGB = (10, 165, 178)   # unverified route (C12): dimmer than a checked 
 TOP_BAR_H = 46
 BOTTOM_BAR_H = 72
 BAR_MARGIN = 28                 # gap between the screen edge and the first/last thing in a bar
-TITLE_FONT_PX, TITLE_TRACKING_PX = 23, 1.6   # tracking = extra space between the title's letters
-SUBTITLE_FONT_PX = 18
-MODE_FONT_PX, STATUS_FONT_PX, STOP_FONT_PX, LABEL_FONT_PX = 24, 20, 23, 19
+TITLE_FONT_PX, TITLE_TRACKING_PX = 20, 3.2   # tracking = extra space between the title's letters
+SUBTITLE_FONT_PX = 14
+LOGO_R = 9                      # brand mark (ring + dot) radius in the top bar
+MODE_FONT_PX, STATUS_FONT_PX, STOP_FONT_PX, LABEL_FONT_PX = 22, 17, 20, 18
 ICON_W = 48                     # route icon box, starting at BAR_MARGIN
 MODE_X = BAR_MARGIN + ICON_W + 20
 DIVIDER_GAP = 38                # space on each side of the thin divider
@@ -78,7 +83,7 @@ BRACKET_FILL_ALPHA = 46         # lighter fill when we only have a box, not the 
 BRACKET_ARM_FRAC, BRACKET_ARM_MIN, BRACKET_ARM_MAX = 0.18, 8, 28
 RETICLE_FRAC, RETICLE_MIN, RETICLE_MAX = 0.15, 14, 34   # radius = fraction of the object's smaller side
 RETICLE_ARC_PX, RETICLE_DOT_PX = 6, 4
-PILL_H, PILL_PAD_X, PILL_RADIUS, PILL_OPACITY = 46, 26, 19, 242
+PILL_H, PILL_PAD_X, PILL_RADIUS, PILL_OPACITY = 40, 18, 20, 236
 PILL_RISE = 20                  # gap between the object's top and the pill's bottom
 PILL_SHIFT_FRAC = 0.12          # pill sits a little right of the reticle (fraction of the object's width)
 PILL_FOOT_FRAC = 0.62           # the leader line leaves the pill's bottom edge this far along its width
@@ -518,7 +523,7 @@ def _label(view: np.ndarray, obj: SceneObject, centre: tuple[float, float], radi
     h, w = view.shape[:2]
     x1, y1, x2, _ = obj.bbox
     text = obj.label[:1].upper() + obj.label[1:]
-    patch, alpha = _label_pill(f"{text} · destination" if obj.confirmed else text)
+    patch, alpha = _label_pill(f"{text} · destination" if obj.confirmed else text, obj.confirmed)
     ph, pw = alpha.shape[:2]
     # Clamp the pill's corner so the whole pill stays inside the frame.
     wanted_x = centre[0] + PILL_SHIFT_FRAC * (x2 - x1) - pw / 2
@@ -557,6 +562,13 @@ def _font(face: str, size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
     path, index = FONT_FILES.get(face, ("", 0))
     try:
         if Path(path).is_file():
+            if isinstance(index, str):  # variable font: pick the weight by name
+                font = ImageFont.truetype(path, size)
+                try:
+                    font.set_variation_by_name(index)
+                except (OSError, ValueError):  # not a variable font after all: keep its default weight
+                    pass
+                return font
             return ImageFont.truetype(path, size, index=index)
     except OSError:
         pass  # unreadable or damaged font file: fall through to the built-in font below
@@ -591,16 +603,26 @@ def _fit(text: str, face, max_width: float) -> str:
 
 @functools.lru_cache(maxsize=8)
 def _top_bar(width: int, left: str, right: str) -> np.ndarray:
-    bar = Image.new("RGB", (width, TOP_BAR_H), BAR_RGB)
-    draw = ImageDraw.Draw(bar)
     middle = TOP_BAR_H // 2
+
+    def shapes(draw: ImageDraw.ImageDraw, s: int) -> None:
+        # Brand mark: a cyan ring with a dot (the same logo as the launcher and setup screens).
+        cx, r = BAR_MARGIN + LOGO_R, LOGO_R
+        draw.ellipse(((cx - r) * s, (middle - r) * s, (cx + r) * s, (middle + r) * s), outline=CYAN_RGB, width=2 * s)
+        d = r * 0.36
+        draw.ellipse(((cx - d) * s, (middle - d) * s, (cx + d) * s, (middle + d) * s), fill=CYAN_RGB)
+        draw.line((0, (TOP_BAR_H - 1) * s, width * s, (TOP_BAR_H - 1) * s), fill=HAIRLINE_RGB, width=s)
+
+    bar = _supersampled("RGB", (width, TOP_BAR_H), BAR_RGB, shapes) if width > 2 * BAR_MARGIN else \
+        Image.new("RGB", (width, TOP_BAR_H), BAR_RGB)
+    draw = ImageDraw.Draw(bar)
     face = _font("bold", TITLE_FONT_PX)
-    x = float(BAR_MARGIN)
+    x = float(BAR_MARGIN + 2 * LOGO_R + 12)
     for letter in left:  # one letter at a time, to put a little extra space between them
-        draw.text((x, middle), letter, font=face, fill=WHITE_RGB, anchor="lm")
+        draw.text((x, middle), letter, font=face, fill=TEXT_RGB, anchor="lm")
         x += face.getlength(letter) + TITLE_TRACKING_PX
     small = _font("demi", SUBTITLE_FONT_PX)
-    right = _fit(right, small, width - BAR_MARGIN - x - TEXT_CLEARANCE)
+    right = _fit(right.upper(), small, width - BAR_MARGIN - x - TEXT_CLEARANCE)
     draw.text((width - BAR_MARGIN, middle), right, font=small, fill=TITLE_GREY_RGB, anchor="rm")
     return _frozen_bgr(bar)
 
@@ -648,6 +670,7 @@ def _bottom_bar_base(width: int, mode: str) -> tuple[Image.Image, int]:
     divider_x = MODE_X + int(face.getlength(mode)) + DIVIDER_GAP
 
     def shapes(draw: ImageDraw.ImageDraw, s: int) -> None:
+        draw.line((0, 0, width * s, 0), fill=HAIRLINE_RGB, width=s)
         _paint_route_icon(draw, s)
         if divider_x < x1 - TEXT_CLEARANCE:
             draw.line((divider_x * s, DIVIDER_INSET * s, divider_x * s, (BOTTOM_BAR_H - DIVIDER_INSET) * s),
@@ -660,7 +683,7 @@ def _bottom_bar_base(width: int, mode: str) -> tuple[Image.Image, int]:
 
     bar = _supersampled("RGB", (width, BOTTOM_BAR_H), BAR_RGB, shapes)
     draw = ImageDraw.Draw(bar)
-    draw.text((MODE_X, middle), mode, font=face, fill=WHITE_RGB, anchor="lm")
+    draw.text((MODE_X, middle), mode, font=face, fill=TEXT_RGB, anchor="lm")
     draw.text((x1 + STOP_TEXT_X, middle), "STOP", font=_font("bold", STOP_FONT_PX), fill=WHITE_RGB, anchor="lm")
     return bar, divider_x + DIVIDER_GAP
 
@@ -678,17 +701,25 @@ def _bottom_bar(width: int, mode: str, status: str) -> np.ndarray:
 
 
 @functools.lru_cache(maxsize=64)
-def _label_pill(text: str) -> tuple[np.ndarray, np.ndarray]:
-    """Dark rounded pill with white text, as (float BGR patch, 0..1 alpha) ready for `_paste`."""
+def _label_pill(text: str, destination: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """Dark rounded pill with a hairline border and white text (plus a green dot for the destination), as
+    (float BGR patch, 0..1 alpha) ready for `_paste`."""
     face = _font("medium", LABEL_FONT_PX)
-    width = int(math.ceil(face.getlength(text))) + 2 * PILL_PAD_X
+    dot_r, dot_gap = 5, 10
+    lead = (2 * dot_r + dot_gap) if destination else 0
+    width = int(math.ceil(face.getlength(text))) + 2 * PILL_PAD_X + lead
 
     def shapes(draw: ImageDraw.ImageDraw, s: int) -> None:
         draw.rounded_rectangle((0, 0, width * s - 1, PILL_H * s - 1), radius=PILL_RADIUS * s,
-                               fill=PILL_RGB + (PILL_OPACITY,))
+                               fill=PILL_RGB + (PILL_OPACITY,), outline=PILL_BORDER_RGB + (255,), width=s)
+        if destination:
+            cx, cy = PILL_PAD_X + dot_r, PILL_H / 2
+            draw.ellipse(((cx - dot_r) * s, (cy - dot_r) * s, (cx + dot_r) * s, (cy + dot_r) * s),
+                         fill=SUCCESS_RGB + (255,))
 
     pill = _supersampled("RGBA", (width, PILL_H), PILL_RGB + (0,), shapes)
-    ImageDraw.Draw(pill).text((width / 2, PILL_H / 2), text, font=face, fill=WHITE_RGB + (255,), anchor="mm")
+    ImageDraw.Draw(pill).text(((width + lead) / 2, PILL_H / 2), text, font=face, fill=TEXT_RGB + (255,),
+                              anchor="mm")
     rgba = np.asarray(pill).astype(np.float32)
     patch, alpha = np.ascontiguousarray(rgba[:, :, 2::-1]), rgba[:, :, 3:4] / 255
     patch.setflags(write=False)

@@ -71,6 +71,12 @@ Find the ESP32 port:
 ls /dev/cu.usbmodem*
 ```
 
+## After a run
+Every run writes a log file to `data/raw/sessions/`. Tell Claude "check the last session" and it can read it:
+- `JAW CLENCH detected` = the headset saw a clench.
+- `CONFIRMED chair #4 ...` = that clench (or dwell) chose an object.
+- `state STOPPED -> DWELLING -> MOVING` = the chair would drive.
+
 ## Keys while it runs
 | Key | Does |
 | --- | --- |

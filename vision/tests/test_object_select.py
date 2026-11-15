@@ -922,3 +922,20 @@ def test_confirmed_destination_is_drawn_differently_from_an_object_only_looked_a
     confirmed = draw(cv2, frame, [chair], {}, Selection(candidate=4, since=0.0, confirmed=4), None, 0.1, "s")
     inside = (slice(350, 420), slice(600, 680))  # inside the chair on the 1280 x 800 screen, away from the reticle
     assert confirmed[inside].mean() > looking[inside].mean() + 10  # the destination is filled much more strongly
+
+
+def test_two_short_blinks_close_together_confirm_and_other_patterns_do_not():
+    from vision.object_select import BlinkConfirm, double_blink
+
+    def feed(events):
+        state, fired = BlinkConfirm(), []
+        for closed, t in events:
+            state, hit = double_blink(state, closed, t)
+            fired.append(hit)
+        return fired
+
+    two = [(False, 0.0), (True, 0.1), (False, 0.25), (True, 0.5), (False, 0.65)]
+    assert feed(two)[-1] is True and sum(feed(two)) == 1
+    assert not any(feed([(False, 0.0), (True, 0.1), (False, 0.25)]))  # one blink
+    assert not any(feed([(True, 0.1), (False, 0.25), (True, 1.5), (False, 1.65)]))  # second too late
+    assert not any(feed([(True, 0.1), (False, 1.0), (True, 1.2), (False, 1.35)]))  # first closure too long

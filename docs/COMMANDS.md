@@ -39,6 +39,11 @@ REAL hoverboard, jaw confirm (wheels up first, kill key in hand):
 ./demo.sh chair
 ```
 
+REAL hoverboard, BLINK TWICE to confirm (SPACE also works; S = emergency stop; wheels up first):
+```
+./demo.sh chair-blink
+```
+
 REAL hoverboard, press SPACE to confirm (no headset needed; S = emergency stop in this mode; wheels up first):
 ```
 ./demo.sh chair-key --skip-calibration

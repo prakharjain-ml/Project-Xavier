@@ -84,6 +84,8 @@ STOP_BEFORE_TARGET_M = 0.4  # the route ends this far before the target's estima
 STOP_KEY, REARM_KEY = 32, ord("r")  # SPACE = operator emergency stop, R = re-arm: the same keys as app.py
 # In key mode (no headset) SPACE confirms instead, so the emergency stop moves to S. See stop_key().
 KEY_MODE_STOP_KEY = ord("s")
+BLINK_MIN_S, BLINK_MAX_CONFIRM_S = 0.05, 0.4  # a deliberate blink: eyes closed this long
+DOUBLE_BLINK_GAP_S = 0.7  # the second blink must end within this time of the first
 # control/goto.py's nav_step is gaining an optional `frame_h` keyword (a target whose box is cut off by the bottom
 # of the frame counts as arrived). Checked once here, so the drive step works with either version of the planner.
 NAV_STEP_TAKES_FRAME_H = "frame_h" in inspect.signature(nav_step).parameters
@@ -160,6 +162,29 @@ CONFIRM_KEY = ord("j")  # "J for jaw": stand-in for a clench.
 SPACE = 32  # in key mode SPACE also confirms (Prakhar, Sun Nov 15: no headset for now, SPACE to confirm)
 
 
+@dataclass(frozen=True)
+class BlinkConfirm:
+    """State of the double-blink detector (confirm mode "blink")."""
+    closed_since: float | None = None  # when the eyes closed, None while open
+    last_blink_end: float | None = None  # end of the previous short blink
+
+
+def double_blink(state: BlinkConfirm, closed: bool, t: float) -> tuple[BlinkConfirm, bool]:
+    """Feed one NEW gaze sample (eyes closed?, its time). True when a second short blink ends within
+    DOUBLE_BLINK_GAP_S of the first. A blink counts only if the eyes were closed BLINK_MIN_S..BLINK_MAX_CONFIRM_S:
+    shorter is a tracker flicker, longer is resting the eyes (which also stops the chair: no gaze)."""
+    if closed:
+        return (state if state.closed_since is not None else replace(state, closed_since=t)), False
+    if state.closed_since is None:
+        return state, False
+    length = t - state.closed_since
+    if not BLINK_MIN_S <= length <= BLINK_MAX_CONFIRM_S:
+        return BlinkConfirm(), False  # not a deliberate blink: start again
+    if state.last_blink_end is not None and t - state.last_blink_end <= DOUBLE_BLINK_GAP_S:
+        return BlinkConfirm(), True  # second blink: confirm, and start fresh
+    return BlinkConfirm(last_blink_end=t), False
+
+
 def confirm_settings(mode: str) -> float | None:
     """Dwell time that confirms by itself: DWELL_S in 'dwell' mode, None when only a clench / key may confirm."""
     return DWELL_S if mode == "dwell" else None
@@ -168,7 +193,7 @@ def confirm_settings(mode: str) -> float | None:
 def confirm_event(mode: str, key: int, jaw) -> bool:
     """Did the rider confirm this frame? 'key': J pressed. 'jaw': a clench from the headset (on the practice
     board, J injects a fake clench into the real detector instead)."""
-    if mode == "key":
+    if mode in ("key", "blink"):  # in blink mode SPACE / J still confirm, as a backup
         return key in (CONFIRM_KEY, SPACE)
     if mode == "jaw" and jaw is not None:
         if key == CONFIRM_KEY and jaw.mode == "synthetic":
@@ -209,7 +234,7 @@ def corrected_point(sample: GazeSample | None, offset: tuple[float, float], now:
 
 def stop_key(confirm_mode: str) -> int:
     """The operator's emergency-stop key: SPACE, except in key mode where SPACE confirms and S stops."""
-    return KEY_MODE_STOP_KEY if confirm_mode == "key" else STOP_KEY
+    return KEY_MODE_STOP_KEY if confirm_mode in ("key", "blink") else STOP_KEY
 
 
 def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look_away: bool, driving: bool) -> str:
@@ -218,11 +243,12 @@ def status_line(confirm_mode: str, has_gaze: bool, frame_age_s: float, must_look
         return f"CAMERA FROZEN (no new picture for {frame_age_s:.1f} s)"
     if not has_gaze:
         return "NO GAZE (face not seen / eyes closed)"
-    stop_name = "S" if confirm_mode == "key" else "SPACE"
+    stop_name = "S" if confirm_mode in ("key", "blink") else "SPACE"
     keys = (f"{stop_name} stop  R re-arm  " if driving else "") + "C re-centre  X cancel  Q quit"
     if must_look_away:
         return f"look away, then back, to choose this object again  |  {keys}"
-    how = {"dwell": "look for 1.5 s", "key": "look, then press SPACE", "jaw": "look, then CLENCH"}[confirm_mode]
+    how = {"dwell": "look for 1.5 s", "key": "look, then press SPACE", "jaw": "look, then CLENCH",
+           "blink": "look, then BLINK TWICE"}[confirm_mode]
     return f"{how} to confirm  |  {keys}"
 
 
@@ -346,6 +372,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
     route, route_m = None, None  # newest route to the destination (image pixels, metres), from the worker
     planned_for = None  # the destination the worker's newest result was planned for
     sel, offset, sample, hit = Selection(), (0.0, 0.0), None, None
+    blink_state = BlinkConfirm()
     shown = None  # newest camera picture, for the screen only
     gaze_filter, drawn_tracks = EuroState(), {}  # smoothing state: cursor filter, outlines as drawn last time
     tracks: list[Track] = []  # every object YOLO tracks in the newest frame: the planner's obstacles
@@ -391,7 +418,13 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
                 route, route_m = (scene.route, scene.route_m) if scene.destination == sel.confirmed else (None, None)
             if frame is None:
                 continue
+            before_sample = sample
             sample = drain_newest(gaze_queue, sample)
+            blinked = False
+            if confirm_mode == "blink" and sample is not None and sample is not before_sample:
+                blink_state, blinked = double_blink(blink_state, sample.closed, sample.t)
+                if blinked:
+                    log.info("DOUBLE BLINK detected")
             if key == ord("c") and sample is not None and sample.point is not None:
                 offset = (0.5 - sample.point[0], 0.5 - sample.point[1])  # rider is looking at the "+"
                 log.info("re-centred: offset %.3f, %.3f", *offset)
@@ -402,7 +435,7 @@ def run(cv2, reader, model, classes, gaze_queue, hfov: float, device: str, secon
             boxes = hit_boxes(targets, frame.shape[1], frame.shape[0])
             hit = pick_region(view_point, boxes, hit) if view_point is not None else None
             before = sel.confirmed
-            confirm = confirm_event(confirm_mode, key, jaw)
+            confirm = confirm_event(confirm_mode, key, jaw) or blinked
             if confirm:  # say what the confirm landed on, so a "nothing happened" can be explained from the log
                 looked = None if sel.since is None or hit != sel.candidate else now - sel.since
                 log.info("CONFIRM pressed: gaze on %s%s", "nothing (cursor not on an object)" if hit is None else
@@ -589,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hfov", type=float, default=load_hfov(), help="calibrated if data/raw/camera_calibration.json exists")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seconds", type=float, default=None)
-    parser.add_argument("--confirm", choices=["dwell", "key", "jaw"], default="dwell",
+    parser.add_argument("--confirm", choices=["dwell", "key", "jaw", "blink"], default="dwell",
                         help="dwell = look 1.5 s; key = look + J; jaw = look + jaw clench (OpenBCI)")
     parser.add_argument("--jaw-board", choices=["synthetic", "wifi", "dongle"], default="dongle",
                         help="--confirm jaw: synthetic = practice (J injects a fake clench)")

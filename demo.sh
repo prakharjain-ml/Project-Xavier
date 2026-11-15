@@ -8,6 +8,8 @@
 #   ./demo.sh chair-dwell   as chair, but confirm by looking (backup if the headset fails)
 #   ./demo.sh chair-key     REAL hoverboard, press SPACE to confirm (no headset); S = emergency stop
 #   ./demo.sh mock-key      as chair-key but to a FAKE port (nothing moves)
+#   ./demo.sh chair-blink   REAL hoverboard, BLINK TWICE to confirm (SPACE also works); S = emergency stop
+#   ./demo.sh mock-blink    as chair-blink but to a FAKE port
 #   ./demo.sh preview  mouse preview of the route (no eyes, no headset, no motors)
 #
 # Cameras: laptop camera = 1 (eyes), Pixel = 0 (room), as on every run so far. If the calibration shows the room
@@ -72,7 +74,7 @@ need_headset_wifi() {
 
 mode="${1:-}"
 shift || true
-case "$mode" in dwell|jaw|mock|chair|chair-dwell|chair-key|mock-key|preview) need_pixel ;; esac
+case "$mode" in dwell|jaw|mock|chair|chair-dwell|chair-key|mock-key|chair-blink|mock-blink|preview) need_pixel ;; esac
 case "$mode" in jaw|mock|chair) need_headset_wifi ;; esac
 case "$mode" in
   dwell)       exec python -m vision.object_select --confirm dwell "${CAMS[@]}" "$@" ;;
@@ -80,10 +82,12 @@ case "$mode" in
   mock)        exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" --drive --mock "${ROUTE[@]}" "$@" ;;
   chair)       exec python -m vision.object_select "${JAW[@]}" "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
   chair-key)   exec python -m vision.object_select --confirm key "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
+  chair-blink) exec python -m vision.object_select --confirm blink "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
+  mock-blink)  exec python -m vision.object_select --confirm blink "${CAMS[@]}" --drive --mock "${ROUTE[@]}" "$@" ;;
   mock-key)    exec python -m vision.object_select --confirm key "${CAMS[@]}" --drive --mock "${ROUTE[@]}" "$@" ;;
   chair-dwell) exec python -m vision.object_select --confirm dwell "${CAMS[@]}" --drive --serial "$(esp32_port)" "${ROUTE[@]}" "$@" ;;
   preview)     exec python -m vision.nav_preview --source "$ROOM_CAM" "$@" ;;
   *)
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 1 ;;
 esac
